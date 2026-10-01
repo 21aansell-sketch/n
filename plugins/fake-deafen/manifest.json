@@ -1,0 +1,14 @@
+{
+  "name": "Fake Voice State",
+  "description": "Look muted or deafened to everyone in a call while you can still hear and talk. Use /fakemute and /fakedeafen.",
+  "authors": [
+    {
+      "name": "ethan"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "MicrophoneSlashIcon"
+  },
+  "hash": "54735f72373825970898cf46f0495043fdabed48d402864dc525e2916999e511"
+}
