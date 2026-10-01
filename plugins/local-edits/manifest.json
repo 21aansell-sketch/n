@@ -1,0 +1,14 @@
+{
+  "name": "Local Edits",
+  "description": "Edit or hide anyone's messages on your phone only. Long-press a message, or use /ledit, /lhide and /lrestore.",
+  "authors": [
+    {
+      "name": "ethan"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "PencilIcon"
+  },
+  "hash": "03e52cd6f301fa99b576283b9552585bc8c986866bb8c43bd1b6690bf79eb2f8"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Background Switcher",
+  "description": "Adds /background <image url> to set your chat background on the current theme. Use /background none to go back to the theme's default.",
+  "authors": [
+    {
+      "name": "ethan"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "ImageIcon"
+  },
+  "hash": "233197608f5682328301dac2a4f6f720ce7b2f0b50148223240ebf8785f70e59"
+}

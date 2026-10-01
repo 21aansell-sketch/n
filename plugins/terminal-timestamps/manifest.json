@@ -1,0 +1,14 @@
+{
+  "name": "Terminal Timestamps",
+  "description": "Shows message times as [HH:MM:SS], like a shell log.",
+  "authors": [
+    {
+      "name": "ethan"
+    }
+  ],
+  "main": "index.js",
+  "hash": "039325f57b4b6d3096be48b32a9a420408a6b26de6ed8ba5a30b46f2d5685357",
+  "vendetta": {
+    "icon": "ClockIcon"
+  }
+}
