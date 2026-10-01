@@ -3,7 +3,7 @@
   "description": "Look muted or deafened to everyone in a call while you can still hear and talk. Use /fakemute and /fakedeafen.",
   "authors": [
     {
-      "name": "ethan"
+      "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
