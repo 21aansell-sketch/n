@@ -1,0 +1,7 @@
+{
+  "name": "GroupPurge",
+  "description": "Adds /purge-gc to remove everyone except you from a group DM you own.",
+  "authors": [{ "name": "i am the us39" }],
+  "main": "index.js",
+  "vendetta": { "icon": "ic_close_24px" }
+}
