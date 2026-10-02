@@ -1,0 +1,14 @@
+{
+  "name": "i am us39",
+  "description": "Adds a /clearchat command that removes everyone else from a group chat you own.",
+  "authors": [
+    {
+      "name": "us39"
+    }
+  ],
+  "main": "index.js",
+  "hash": "8934676c0cc8f45ce3e962087be99b782081ddc195c7c93a8b00d398b5efb5e3",
+  "vendetta": {
+    "icon": "ic_close_circle_24px"
+  }
+}
