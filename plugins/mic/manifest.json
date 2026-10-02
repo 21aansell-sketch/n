@@ -1,0 +1,14 @@
+{
+  "name": "ahhhhhhhhhhhhh",
+  "description": "Boosts your mic output by 100 dB (adjustable via storage.gainDb).",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "ac32e5b7287587f669338ecdfd1410caccc69a061685c6d6e5c84f56e1adfbbf",
+  "vendetta": {
+    "icon": "ic_audio"
+  }
+}
