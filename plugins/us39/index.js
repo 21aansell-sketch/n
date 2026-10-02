@@ -9,7 +9,7 @@
     const RestAPI = findByProps("getAPIBaseURL", "get");
 
     const GROUP_DM = 3;
-    const DELAY_MS = 1200; // stay under Discord's rate limit
+    const DELAY_MS = 500; // stay under Discord's rate limit
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const toast = msg => showToast(msg);
 
