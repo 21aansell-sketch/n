@@ -1,14 +1,14 @@
 {
   "name": "us39",
-  "description": "i am us39 and i nuke gc",
+  "description": "Adds /purge-gc to remove everyone except you from a group DM you own.",
   "authors": [
     {
-      "name": "us39"
+      "name": "us39",
+      "id": "0"
     }
   ],
   "main": "index.js",
-  "hash": "4463cc31e6c3eda2b33c4a20670f901f3497841c13816c117a3d4dec4b00acd7",
   "vendetta": {
-    "icon": "ClockIcon"
+    "icon": "ic_close_circle_24px"
   }
 }
