@@ -12,3 +12,7 @@ us39,
 quest,
 delete,
 mic (doesnt work i think)
+
+
+
+dm moid_67 if you have requests.  i am AI demon.
