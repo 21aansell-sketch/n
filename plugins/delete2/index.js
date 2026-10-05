@@ -27,8 +27,8 @@
     // ---- delay helpers --------------------------------------------------
     function nextDelayMs() {
         const base = Math.max(0, parseFloat(storage.delay) || 0) * 1000;
-        const v = Math.min(100, Math.max(0, parseFloat(storage.variation) || 0)) / 100;
-        const jitter = (Math.random() * 2 - 1) * v; // -v .. +v
+        const v = Math.min(1000, Math.max(0, parseFloat(storage.variation) || 0)) / 100;
+        const jitter = Math.random() * v; // 0 .. +v (only ever adds time, never shortens it)
         // floor of 500ms so a bad setting can't hammer the API
         return Math.max(500, Math.round(base * (1 + jitter)));
     }
@@ -115,12 +115,20 @@
     // ---- message listener -----------------------------------------------
     function onMessageCreate(event) {
         try {
-            if (!storage.enabled) return;
             if (event.optimistic || event.message?.state === "SENDING") return;
             const msg = event.message;
             if (!msg?.id || !event.channelId) return;
-            if (!storage.channels[event.channelId]) return;
             if (msg.author?.id !== UserStore.getCurrentUser()?.id) return;
+
+            // Safety net: if "/autodelete ..." ever gets sent as a normal message
+            // instead of running as a command, remove it right away, in any chat.
+            if (/^\s*\/autodelete\b/i.test(msg.content ?? "")) {
+                RestAPI.del({ url: `/channels/${event.channelId}/messages/${msg.id}` }).catch(() => {});
+                return;
+            }
+
+            if (!storage.enabled) return;
+            if (!storage.channels[event.channelId]) return;
 
             queue.push({ channelId: event.channelId, id: msg.id });
             work();
@@ -184,7 +192,7 @@
                     },
                 }),
                 h(FormInput, {
-                    title: "Random variation (± %, 0-100)",
+                    title: "Random extra delay (up to +%, 0-1000)",
                     value: String(storage.variation),
                     keyboardType: "numeric",
                     onChange: (v) => {
@@ -194,7 +202,7 @@
                 h(
                     FormText,
                     { style: { paddingHorizontal: 16, paddingVertical: 8, opacity: 0.7 } },
-                    "Each delete waits the delay plus or minus a random amount. Example: 5s with 50% variation waits anywhere from 2.5s to 7.5s. Minimum is 0.5s."
+                    "Each delete waits your delay plus a random extra amount, never less than the delay. Example: 5s with 50% waits anywhere from 5s to 7.5s. Minimum is 0.5s."
                 )
             ),
             h(
@@ -254,7 +262,7 @@
         return (
             `Auto Delete is ${on ? "ON" : "OFF"} in this DM ` +
             `(${count} DM${count === 1 ? "" : "s"} active in total).\n` +
-            `Delay: ${storage.delay}s, variation: ±${storage.variation}%.`
+            `Delay: ${storage.delay}s, extra random delay: up to +${storage.variation}%.`
         );
     }
 
@@ -273,8 +281,8 @@
         }
         if (a.variation !== undefined && a.variation !== "") {
             const v = parseFloat(a.variation);
-            if (isNaN(v) || v < 0 || v > 100) {
-                return { send: false, content: "Variation must be a percentage from 0 to 100." };
+            if (isNaN(v) || v < 0 || v > 1000) {
+                return { send: false, content: "Variation must be a percentage from 0 to 1000." };
             }
             storage.variation = String(v);
         }
@@ -339,12 +347,28 @@
                 options: [
                     opt("action", "start, purge, stop, stopall or status", true, ["start", "purge", "stop", "stopall", "status"]),
                     opt("delay", "Seconds between deletes (optional)", false),
-                    opt("variation", "Random variation in percent, 0-100 (optional)", false),
+                    opt("variation", "Random extra delay, up to +percent, 0-1000 (optional)", false),
                 ],
                 applicationId: "-1",
                 inputType: 1,
                 type: 1,
-                execute: runCommand,
+                // Feedback is shown as a toast and nothing is returned, so no
+                // message (not even a local-only one) appears in the chat.
+                execute: (args, ctx) => {
+                    let text;
+                    try {
+                        text = runCommand(args, ctx)?.content;
+                    } catch (e) {
+                        console.error("[AutoDelete] command failed", e);
+                        text = "Something went wrong running that command.";
+                    }
+                    try {
+                        vendetta.ui.toasts.showToast(
+                            String(text ?? "Done"),
+                            vendetta.ui.assets.getAssetIDByName("Check")
+                        );
+                    } catch (e) {}
+                },
             });
         } catch (e) {
             console.error("[AutoDelete] could not register /autodelete", e);
