@@ -7,8 +7,8 @@ original repo i took as a template
 
 plugins i made
 
-fake-deafen
-us39
-quest
-delete
+fake-deafen,
+us39,
+quest,
+delete,
 mic (doesnt work i think)
