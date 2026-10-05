@@ -1,0 +1,14 @@
+{
+  "name": "Ultimate power",
+  "description": "6 Quest badges. You are powerful.",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "c0c86692c016c373ab98455a0f6f8bf5b54639af26db12a4b926ab4b5ec52749",
+  "vendetta": {
+    "icon": "ic_badge"
+  }
+}
