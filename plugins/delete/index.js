@@ -9,7 +9,7 @@
 //  - Any HTTP 429 -> wait retry_after (+ padding) and double the delay; 3 in a row -> pause 15 min.
 //  - 401/403 -> stop that channel; plugin never retries aggressively.
 //  - Only messages older than MIN_AGE_HOURS are touched, and only your own.
-//  - Starts DISABLED. Enable by setting storage.enabled = true (see bottom of file).
+//  - Starts ENABLED. To pause it, set enabled: false below and rebuild, or uninstall the plugin.
 (function () {
     const { metro, storage: _unused, plugin } = vendetta;
     const { findByProps, findByStoreName } = metro;
@@ -17,7 +17,7 @@
 
     // ---------- config (overridable via plugin storage) ----------
     const DEFAULTS = {
-        enabled: false,        // must be turned on explicitly
+        enabled: true,         // on by default (no settings screen needed)
         minAgeHours: 24 * 7,   // only delete messages older than this
         deleteDelayMin: 1200,  // ms
         deleteDelayMax: 2000,  // ms
@@ -25,9 +25,23 @@
         fetchDelayMax: 5000,   // ms
         maxDeletesPerHour: 1000,
         rescanHours: 6,        // how often to re-check a channel that had nothing left
-        excludeChannelIds: []  // DM channel IDs to never touch
+        // Leave empty to clean ALL DMs. Put channel IDs here (as strings) to ONLY clean those, e.g.
+        // includeChannelIds: ["123456789012345678", "987654321098765432"]
+        includeChannelIds: [],
+        excludeChannelIds: []  // DM channel IDs to never touch (applied after the list above)
     };
     for (const k in DEFAULTS) if (storage[k] === undefined) storage[k] = DEFAULTS[k];
+    // One-time migration: earlier builds saved enabled=false on first load.
+    if (storage.configVersion !== 3) {
+        storage.enabled = DEFAULTS.enabled;
+        storage.deleteDelayMin = DEFAULTS.deleteDelayMin;
+        storage.deleteDelayMax = DEFAULTS.deleteDelayMax;
+        storage.maxDeletesPerHour = DEFAULTS.maxDeletesPerHour;
+        storage.includeChannelIds = DEFAULTS.includeChannelIds;
+        storage.excludeChannelIds = DEFAULTS.excludeChannelIds;
+        storage.minAgeHours = DEFAULTS.minAgeHours;
+        storage.configVersion = 3;
+    }
 
     // Message types that users are allowed to delete (default, reply).
     const DELETABLE_TYPES = new Set([0, 19]);
@@ -83,7 +97,9 @@
         // type 1 = DM, type 3 = group DM
         const chans = ChannelStore.getSortedPrivateChannels?.() ?? [];
         return chans
-            .filter(c => (c.type === 1 || c.type === 3) && !storage.excludeChannelIds.includes(c.id))
+            .filter(c => (c.type === 1 || c.type === 3)
+                && (storage.includeChannelIds.length === 0 || storage.includeChannelIds.includes(c.id))
+                && !storage.excludeChannelIds.includes(c.id))
             .map(c => c.id);
     }
 
@@ -174,44 +190,50 @@
         }
     }
 
-    // Minimal settings page: an on/off switch and a "keep messages newer than" row.
-    const React = metro.common.React;
-    const { ScrollView } = metro.common.ReactNative;
-    const { Forms } = vendetta.ui.components;
-    const { useProxy } = vendetta.storage;
-    const { FormSection, FormSwitchRow, FormRow, FormText } = Forms;
+    // Optional settings page; if the UI components aren't available the plugin still works.
+    let Settings;
+    try {
+        const React = metro.common.React;
+        const { ScrollView } = metro.common.ReactNative;
+        const { Forms } = vendetta.ui.components;
+        const { useProxy } = vendetta.storage;
+        const { FormSection, FormSwitchRow, FormRow, FormText } = Forms;
 
-    function Settings() {
-        useProxy(storage);
-        return React.createElement(
-            ScrollView,
-            null,
-            React.createElement(
-                FormSection,
-                { title: "Auto Delete DMs", titleStyleType: "no_border" },
-                React.createElement(FormSwitchRow, {
-                    label: "Enabled",
-                    subLabel: "Deletes only YOUR messages in DMs/group DMs, slowly in the background.",
-                    value: storage.enabled,
-                    onValueChange: v => { storage.enabled = v; }
-                }),
-                React.createElement(FormRow, {
-                    label: `Keep messages newer than ${storage.minAgeHours}h`,
-                    subLabel: "Tap to cycle: 1h, 24h, 7d, 30d",
-                    onPress: () => {
-                        const steps = [1, 24, 168, 720];
-                        const i = steps.indexOf(storage.minAgeHours);
-                        storage.minAgeHours = steps[(i + 1) % steps.length];
-                    }
-                }),
-                React.createElement(FormText, null,
-                    `Limit: ${storage.maxDeletesPerHour} deletes/hour, one request at a time.`)
-            )
-        );
-    }
+        function SettingsImpl() {
+            useProxy(storage);
+            return React.createElement(
+                ScrollView,
+                null,
+                React.createElement(
+                    FormSection,
+                    { title: "Auto Delete DMs", titleStyleType: "no_border" },
+                    React.createElement(FormSwitchRow, {
+                        label: "Enabled",
+                        subLabel: "Deletes only YOUR messages in DMs/group DMs, slowly in the background.",
+                        value: storage.enabled,
+                        onValueChange: v => { storage.enabled = v; }
+                    }),
+                    React.createElement(FormRow, {
+                        label: `Keep messages newer than ${storage.minAgeHours}h`,
+                        subLabel: "Tap to cycle: 1h, 24h, 7d, 30d",
+                        onPress: () => {
+                            const steps = [1, 24, 168, 720];
+                            const i = steps.indexOf(storage.minAgeHours);
+                            storage.minAgeHours = steps[(i + 1) % steps.length];
+                        }
+                    }),
+                    React.createElement(FormText, null,
+                        `Limit: ${storage.maxDeletesPerHour} deletes/hour, one request at a time.`)
+                )
+            );
+        }
+
+
+        Settings = SettingsImpl;
+    } catch (e) { Settings = undefined; }
 
     return {
-        settings: Settings,
+        ...(Settings ? { settings: Settings } : {}),
         onLoad() {
             // Small startup delay so the app finishes loading its stores first.
             setTimeout(() => { if (!stopped) mainLoop(); }, 15000);
