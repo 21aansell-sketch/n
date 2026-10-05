@@ -1,13 +1,13 @@
 {
-  "name": "Delete, Delete and DELETE",
-  "description": "nahh this plugin is a death note refrence boi",
+  "name": "delete, Delete and DELETE",
+  "description": "this is a death note refrence.",
   "authors": [
     {
-      "name": "21aanseell-sketch"
+      "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "2441227afffe37d9cba872580f1ec72933a3ab65054a6fb08caf79046d11e280",
+  "hash": "6e8b398107f8e6689483427b77aa40f4c8a160f9cdace72b7103e5db38ace876",
   "vendetta": {
     "icon": "ic_message_delete"
   }
