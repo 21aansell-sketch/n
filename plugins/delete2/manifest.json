@@ -1,0 +1,14 @@
+{
+  "name": "delete, Delete And DELETE",
+  "description": "hahahaahahha death note refrence hahah",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "0286d53aac7375bdc94f33f5070aed48688f8ed8f4a272bfadf9f5a4c6ad08fd",
+  "vendetta": {
+    "icon": "ic_message_delete"
+  }
+}
