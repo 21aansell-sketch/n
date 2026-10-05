@@ -5,14 +5,7 @@ original repo i took as a template
 # i used ai and so did he 
 
 
-plugins i made
-
-fake-deafen,
-us39,
-quest,
-delete,
-mic (doesnt work i think)
-
+plugins i didnt make are the ones in his repo
 
 
 dm @moid_67 if you have requests.  i am AI demon.
