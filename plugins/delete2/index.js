@@ -22,6 +22,7 @@
     storage.delay ??= "5";       // seconds between deletes
     storage.variation ??= "50";  // +/- percent applied to the delay
     storage.channels ??= {};     // { [channelId]: true }
+    storage.deleteOld ??= false; // also delete past messages when a DM is turned on
 
     // ---- delay helpers --------------------------------------------------
     function nextDelayMs() {
@@ -62,6 +63,53 @@
             }
         }
         running = false;
+    }
+
+    // ---- delete old messages ---------------------------------------------
+    // Walks a DM's history from newest to oldest, queues every one of your
+    // deletable messages, and lets the normal queue (delay + variation) delete them.
+    const purging = {}; // channelId -> true while a history scan is running
+    const DELETABLE_TYPES = new Set([0, 19, 20]); // normal, reply, slash command
+
+    async function purgeChannel(channelId) {
+        if (purging[channelId]) return 0;
+        purging[channelId] = true;
+        const me = UserStore.getCurrentUser()?.id;
+        let before;
+        let found = 0;
+        try {
+            while (!stopped && purging[channelId]) {
+                const url = `/channels/${channelId}/messages?limit=100` + (before ? `&before=${before}` : "");
+                let res;
+                try {
+                    res = await RestAPI.get({ url });
+                } catch (e) {
+                    const status = e?.status ?? e?.body?.status;
+                    if (status === 429) {
+                        await sleep(((e?.body?.retry_after ?? 5) + 0.5) * 1000);
+                        continue;
+                    }
+                    break; // no access / network error - give up on this scan
+                }
+                const msgs = res?.body ?? [];
+                if (!msgs.length) break;
+
+                for (const m of msgs) {
+                    if (m.author?.id === me && DELETABLE_TYPES.has(m.type)) {
+                        queue.push({ channelId, id: m.id });
+                        found++;
+                    }
+                }
+                work();
+
+                before = msgs[msgs.length - 1].id;
+                if (msgs.length < 100) break;
+                await sleep(1000 + Math.random() * 1000); // be gentle with history fetches
+            }
+        } finally {
+            delete purging[channelId];
+        }
+        return found;
     }
 
     // ---- message listener -----------------------------------------------
@@ -117,6 +165,16 @@
                         },
                     }),
                 }),
+                h(FormRow, {
+                    label: "Also delete past messages",
+                    subLabel: "When a DM is turned on, delete your old messages there too",
+                    trailing: h(FormSwitch, {
+                        value: !!storage.deleteOld,
+                        onValueChange: (v) => {
+                            storage.deleteOld = v;
+                        },
+                    }),
+                }),
                 h(FormInput, {
                     title: "Delay between deletes (seconds)",
                     value: String(storage.delay),
@@ -152,8 +210,16 @@
                               trailing: h(FormSwitch, {
                                   value: !!storage.channels[ch.id],
                                   onValueChange: (v) => {
-                                      if (v) storage.channels[ch.id] = true;
-                                      else delete storage.channels[ch.id];
+                                      if (v) {
+                                          storage.channels[ch.id] = true;
+                                          if (storage.deleteOld) purgeChannel(ch.id);
+                                      } else {
+                                          delete storage.channels[ch.id];
+                                          delete purging[ch.id];
+                                          for (let i = queue.length - 1; i >= 0; i--) {
+                                              if (queue[i].channelId === ch.id) queue.splice(i, 1);
+                                          }
+                                      }
                                   },
                               }),
                           })
@@ -162,17 +228,146 @@
         );
     }
 
+    // ---- slash command --------------------------------------------------
+    // /autodelete action:<start|stop|stopall|status> [delay] [variation]
+    // Run it inside the DM you want to control.
+    let unregisterCommand = null;
+
+    function opt(name, description, required, choices) {
+        const o = {
+            name,
+            displayName: name,
+            description,
+            displayDescription: description,
+            required,
+            type: 3, // STRING
+        };
+        if (choices) {
+            o.choices = choices.map((c) => ({ name: c, displayName: c, value: c }));
+        }
+        return o;
+    }
+
+    function summary(channelId) {
+        const on = !!storage.channels[channelId];
+        const count = Object.keys(storage.channels).length;
+        return (
+            `Auto Delete is ${on ? "ON" : "OFF"} in this DM ` +
+            `(${count} DM${count === 1 ? "" : "s"} active in total).\n` +
+            `Delay: ${storage.delay}s, variation: ±${storage.variation}%.`
+        );
+    }
+
+    function runCommand(args, ctx) {
+        const a = {};
+        for (const x of args ?? []) a[x.name] = x.value;
+        const channelId = ctx?.channel?.id;
+        const action = String(a.action ?? "status").toLowerCase();
+
+        if (a.delay !== undefined && a.delay !== "") {
+            const d = parseFloat(a.delay);
+            if (isNaN(d) || d < 0.5) {
+                return { send: false, content: "Delay must be a number of seconds, at least 0.5." };
+            }
+            storage.delay = String(d);
+        }
+        if (a.variation !== undefined && a.variation !== "") {
+            const v = parseFloat(a.variation);
+            if (isNaN(v) || v < 0 || v > 100) {
+                return { send: false, content: "Variation must be a percentage from 0 to 100." };
+            }
+            storage.variation = String(v);
+        }
+
+        if (action === "stopall") {
+            storage.channels = {};
+            queue.length = 0;
+            for (const id of Object.keys(purging)) delete purging[id];
+            return { send: false, content: "Auto Delete stopped in every DM." };
+        }
+
+        const ch = channelId ? ChannelStore.getChannel(channelId) : null;
+        if (action === "status") {
+            return { send: false, content: channelId ? summary(channelId) : "Open a DM first." };
+        }
+        if (!ch || (ch.type !== 1 && ch.type !== 3)) {
+            return { send: false, content: "Run this inside the DM or group DM you want to control." };
+        }
+
+        if (action === "start") {
+            storage.enabled = true;
+            storage.channels[channelId] = true;
+            if (storage.deleteOld) purgeChannel(channelId);
+            return {
+                send: false,
+                content:
+                    "Started. " +
+                    summary(channelId) +
+                    (storage.deleteOld ? "\nAlso deleting your past messages here." : ""),
+            };
+        }
+        if (action === "purge") {
+            if (purging[channelId]) {
+                return { send: false, content: "Already scanning this DM for your old messages." };
+            }
+            purgeChannel(channelId);
+            return {
+                send: false,
+                content:
+                    "Deleting your past messages in this DM, newest first, using your delay and variation. " +
+                    "Use /autodelete action:stop to cancel.",
+            };
+        }
+        if (action === "stop") {
+            delete storage.channels[channelId];
+            delete purging[channelId];
+            for (let i = queue.length - 1; i >= 0; i--) {
+                if (queue[i].channelId === channelId) queue.splice(i, 1);
+            }
+            return { send: false, content: "Stopped. " + summary(channelId) };
+        }
+        return { send: false, content: "Unknown action. Use start, purge, stop, stopall or status." };
+    }
+
+    function registerSlashCommand() {
+        try {
+            unregisterCommand = vendetta.commands.registerCommand({
+                name: "autodelete",
+                displayName: "autodelete",
+                description: "Start or stop auto-deleting your messages in this DM",
+                displayDescription: "Start or stop auto-deleting your messages in this DM",
+                options: [
+                    opt("action", "start, purge, stop, stopall or status", true, ["start", "purge", "stop", "stopall", "status"]),
+                    opt("delay", "Seconds between deletes (optional)", false),
+                    opt("variation", "Random variation in percent, 0-100 (optional)", false),
+                ],
+                applicationId: "-1",
+                inputType: 1,
+                type: 1,
+                execute: runCommand,
+            });
+        } catch (e) {
+            console.error("[AutoDelete] could not register /autodelete", e);
+        }
+    }
+
     // ---- plugin object --------------------------------------------------
     return {
         default: {
             onLoad() {
                 stopped = false;
                 FluxDispatcher.subscribe("MESSAGE_CREATE", onMessageCreate);
+                registerSlashCommand();
             },
             onUnload() {
                 stopped = true;
                 queue.length = 0;
+                for (const id of Object.keys(purging)) delete purging[id];
                 FluxDispatcher.unsubscribe("MESSAGE_CREATE", onMessageCreate);
+                try {
+                    unregisterCommand?.();
+                } catch (e) {}
+                unregisterCommand = null;
             },
             settings: Settings,
         },
