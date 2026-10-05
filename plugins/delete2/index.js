@@ -1,6 +1,7 @@
-// Auto Delete - automatically deletes your own messages in the DMs you pick.
-// Plugin format: a single expression that evaluates to the plugin object.
 (function () {
+    // Auto Delete - automatically deletes your own messages in the DMs you pick.
+    // NOTE: keep the file starting with "(function" - Kettu evaluates it as
+    // `return <file>`, so anything (even a comment) before it breaks loading.
     const { findByProps, findByStoreName } = vendetta.metro;
     const { React, ReactNative, FluxDispatcher } = vendetta.metro.common;
     const { storage } = vendetta.plugin;
