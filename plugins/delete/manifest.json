@@ -1,0 +1,14 @@
+{
+  "name": "Delete, Delete and DELETE",
+  "description": "nahh this plugin is a death note refrence boi",
+  "authors": [
+    {
+      "name": "21aanseell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "2441227afffe37d9cba872580f1ec72933a3ab65054a6fb08caf79046d11e280",
+  "vendetta": {
+    "icon": "ic_message_delete"
+  }
+}
