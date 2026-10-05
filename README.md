@@ -15,4 +15,4 @@ mic (doesnt work i think)
 
 
 
-dm moid_67 if you have requests.  i am AI demon.
+dm @moid_67 if you have requests.  i am AI demon.
