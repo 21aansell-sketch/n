@@ -9,7 +9,7 @@
     const pending = new Set();
     let unregister;
 
-    function sendAndDelete(channelId, content, delayMs) {
+    function sendAndDelete(channelId, content, delayMs, silent) {
         const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
         let done = false;
         let timeout;
@@ -42,7 +42,14 @@
 
         const res = MessageActions.sendMessage(
             channelId,
-            { content, invalidEmojis: [], tts: false, validNonShortcutEmojis: [] },
+            {
+                content,
+                invalidEmojis: [],
+                tts: false,
+                validNonShortcutEmojis: [],
+                // 4096 = SUPPRESS_NOTIFICATIONS (same flag the @silent prefix sets)
+                ...(silent ? { flags: 4096 } : {})
+            },
             undefined,
             { nonce }
         );
@@ -88,6 +95,14 @@
                         displayDescription: "these are miliseleconds before deleting. its at 0.",
                         required: false,
                         type: 4
+                    },
+                    {
+                        name: "silent",
+                        displayName: "silent",
+                        description: "Send as a silent message (no push/desktop notification)",
+                        displayDescription: "Send as a silent message (no push/desktop notification)",
+                        required: false,
+                        type: 5
                     }
                 ],
                 execute(args, ctx) {
@@ -99,7 +114,7 @@
                     const content = [user ? `<@${user}>` : "", text ?? ""].filter(Boolean).join(" ");
                     if (!content) return { content: "GhostPing: give me a user or a message." , ephemeral: true };
 
-                    sendAndDelete(ctx.channel.id, content, delay);
+                    sendAndDelete(ctx.channel.id, content, delay, !!get("silent"));
                 }
             });
         },
