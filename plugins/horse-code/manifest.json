@@ -1,0 +1,14 @@
+{
+  "name": "the Morse.",
+  "description": "/morse.",
+  "authors": [
+    {
+      "name": "21aansell"
+    }
+  ],
+  "main": "index.js",
+  "hash": "4822fc76f1ab03731f4e13c31a6d08fede83770ba6fe292bfa72c8585e2aed09",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
+}
