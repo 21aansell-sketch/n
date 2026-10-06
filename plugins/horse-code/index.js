@@ -145,7 +145,7 @@
                         choices: ["toggle", "on", "off", "incoming", "status"].map(choice),
                     },
                 ],
-                execute(args) {
+                execute(args, ctx) {
                     const action = (args.find(a => a.name === "action")?.value ?? "toggle").toString();
                     switch (action) {
                         case "on": storage.enabled = true; break;
@@ -154,7 +154,14 @@
                         case "status": break;
                         default: storage.enabled = !storage.enabled;
                     }
-                    return { send: false, content: status() };
+                    // Show the result only to you (local bot message), never send it to the chat
+                    const channelId = ctx?.channel?.id;
+                    const messageUtil = findByProps("sendBotMessage");
+                    if (channelId && messageUtil?.sendBotMessage) {
+                        messageUtil.sendBotMessage(channelId, status());
+                    } else {
+                        ui.toasts.showToast(status().replace(/\*\*/g, "").replace("\n", " | "));
+                    }
                 },
             });
         },
