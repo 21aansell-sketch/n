@@ -1,13 +1,13 @@
 {
-  "name": "the Morse.",
-  "description": "/morse.",
+  "name": "the Morse",
+  "description": "a /morse command to become morse so your morse.",
   "authors": [
     {
       "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "4822fc76f1ab03731f4e13c31a6d08fede83770ba6fe292bfa72c8585e2aed09",
+  "hash": "046d9c7ae542c988bfbf7976f41e0d5503bcc9a6f6e93878bf52b8856a8da678",
   "vendetta": {
     "icon": "ic_message_edit"
   }
