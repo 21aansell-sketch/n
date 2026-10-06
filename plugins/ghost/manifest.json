@@ -1,0 +1,14 @@
+{
+  "name": "do /ghostping",
+  "description": "your a prick for using this mate",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "2ba74382fbf7c07734f38ac5af345a92994b77f2d3fd5562562a5cb08fb5743b",
+  "vendetta": {
+    "icon": "ic_message_delete"
+  }
+}
