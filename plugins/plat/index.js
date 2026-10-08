@@ -1,14 +1,10 @@
-// Device Indicator - shows which platform(s) a user is online on:
-// PC, Mobile, Web, PS5 and VR.
-//
-//  - A small badge appears next to the user's name on their profile.
-//  - /device <user> also prints the details in chat (only you see it).
-//
-// Discord only exposes this through presence data:
-//  - client_status: { desktop, mobile, web, embedded }   -> PC / Mobile / Web / Console
-//  - activities[].platform: "ps5", "ps4", "xbox", ...    -> which console
-//  - VR has no official flag, so it is guessed from activity names.
 (function () {
+    // NOTE: no comments before this line. The loader does `return <code>`, and a
+    // leading comment/newline makes it return undefined, so the plugin never loads.
+    //
+    // Device Indicator: PC / Mobile / Web / PS5 / VR badge on profiles + /device.
+    // Data comes from presence: client_status (desktop/mobile/web/embedded) and
+    // activities[].platform (ps5/xbox...). VR is guessed from activity names.
     const { findByProps, findByName, findByStoreName } = vendetta.metro;
     const { React, ReactNative } = vendetta.metro.common;
     const { registerCommand } = vendetta.commands;
