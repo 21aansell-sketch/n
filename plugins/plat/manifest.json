@@ -1,0 +1,11 @@
+{
+  "name": "Device Indicator",
+  "description": "moid_67 i am",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "ecba900682f27c32db260783844573ac26c138534be152cbd1aeb40919091b3c"
+}
