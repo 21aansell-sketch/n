@@ -1,11 +1,11 @@
 {
   "name": "Device Indicator",
-  "description": "moid_67 i am",
+  "description": "Shows PC, Mobile, Web, PS5/console and VR icons on status dots, DMs and profiles. Use /device to check a user.",
   "authors": [
     {
       "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "02037d8649697af59b85ef1e5c8a87511b415770293cc44f1d95c3b35105ccd5"
+  "hash": ""
 }
