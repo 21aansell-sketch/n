@@ -1,0 +1,14 @@
+{
+  "name": "Channel Permissions",
+  "description": "hello i am moid_67",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "3334e0609121dd2801221f58e502f68c9333c7f7f5e75fbac4bd19eead341618",
+  "vendetta": {
+    "icon": "ic_lock"
+  }
+}
