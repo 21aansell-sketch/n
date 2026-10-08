@@ -159,30 +159,40 @@
             }
             unpatches.push(
                 after("openLazy", LazyActionSheet, ([component, key, sheetProps]) => {
-                    if (!/ChannelLongPress/.test(String(key))) return;
+                    const k = String(key);
+                    console.log("[ChannelPermissions] sheet opened:", k, Object.keys(sheetProps ?? {}));
+                    if (!/channel/i.test(k) || /message|thread|voice-?user|member|user/i.test(k.replace(/channel/gi, ""))) return;
                     component.then((instance) => {
                         const unpatch = after("default", instance, (_, res) => {
-                            React.useEffect(() => () => { unpatch(); }, []);
+                            try { React.useEffect(() => () => { unpatch(); }, []); } catch (e) {}
 
                             const channel =
-                                sheetProps?.channel ?? ChannelStore.getChannel(sheetProps?.channelId);
+                                sheetProps?.channel ??
+                                ChannelStore.getChannel(sheetProps?.channelId ?? sheetProps?.channel?.id);
                             if (!channel?.guild_id) return; // DMs have no roles
 
-                            const rows = findInReactTree(
-                                res,
-                                (x) =>
-                                    Array.isArray(x) &&
-                                    x.some(
-                                        (c) =>
-                                            c?.props?.label !== undefined ||
-                                            c?.type === ActionSheetRow ||
-                                            c?.type === TableRow
-                                    )
-                            );
-                            if (!rows || rows.some((r) => r?.key === "channel-permissions-viewer")) return;
+                            const isRow = (c) =>
+                                c?.props?.label !== undefined ||
+                                c?.props?.children !== undefined && c?.type === Row ||
+                                c?.type === ActionSheetRow ||
+                                c?.type === TableRow;
 
-                            const row = makeRow(channel);
-                            rows.push(React.cloneElement(row, { key: "channel-permissions-viewer" }));
+                            const rows = findInReactTree(res, (x) => Array.isArray(x) && x.some(isRow));
+                            const row = React.cloneElement(makeRow(channel), { key: "channel-permissions-viewer" });
+
+                            if (rows) {
+                                if (rows.some((r) => r?.key === "channel-permissions-viewer")) return;
+                                rows.push(row);
+                                return;
+                            }
+
+                            // Fallback: append to the root's children
+                            const children = res?.props?.children;
+                            if (Array.isArray(children)) {
+                                if (!children.some((r) => r?.key === "channel-permissions-viewer")) children.push(row);
+                            } else if (res?.props) {
+                                res.props.children = [children, row];
+                            }
                         });
                     });
                 })
