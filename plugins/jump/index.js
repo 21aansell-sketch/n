@@ -12,6 +12,7 @@
     let busy = false;
     let inside = false; // guards against re-entering our own element creation
     let announced = false;
+    let chosenType = null; // component type of the one jump-to-bottom element we attach to
     const seen = new Map(); // debug: label -> info about elements with jump-ish labels
 
     const OUR_LABEL = "Go to first message";
@@ -130,6 +131,11 @@
         if (WEAK_RE.test(label)) record(label, el);
         if (!STRONG_RE.test(label)) return el;
 
+        // The same button can match at several levels (outer component, inner Pressable, ...).
+        // The outermost is created first, so lock onto its component type and ignore the rest.
+        if (chosenType === null) chosenType = el.type;
+        else if (el.type !== chosenType) return el;
+
         inside = true;
         try {
             if (!announced) {
@@ -168,6 +174,8 @@
 
     return {
         onLoad() {
+            chosenType = null;
+            announced = false;
             const targets = [];
             const runtime = findByProps("jsx", "jsxs");
             if (runtime) {
