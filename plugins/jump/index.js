@@ -2,7 +2,7 @@
     const { metro, patcher, ui } = vendetta;
     const { React, ReactNative } = metro.common;
     const { findByProps, findByStoreName } = metro;
-    const { View, Pressable, Text, ScrollView } = ReactNative;
+    const { View, Pressable, Text, ScrollView, StyleSheet } = ReactNative;
 
     const RestAPI = findByProps("getAPIBaseURL", "get");
     const MessageActions = findByProps("jumpToMessage");
@@ -10,12 +10,16 @@
 
     const unpatches = [];
     let busy = false;
-    let report = []; // lines shown on the settings page
+    let inside = false; // guards against re-entering our own element creation
+    let announced = false;
+    const seen = new Map(); // debug: label -> info about elements with jump-ish labels
 
-    // Strong match: what we expect the jump-to-bottom button to be called.
-    const STRONG_RE = /jump.{0,12}(present|bottom|latest|recent|new)|scroll.{0,12}(bottom|present|latest|end)|(bottom|present|latest).{0,12}(jump|scroll)/i;
-    // Weak match: only used to show candidates on the settings page.
-    const WEAK_RE = /jump|scroll.?to|to.?(bottom|present|latest)|present|latest/i;
+    const OUR_LABEL = "Go to first message";
+    // The jump-to-bottom button's accessibility label (English UI).
+    const STRONG_RE = /(jump|go|scroll|back).{0,10}(to )?.{0,6}(present|bottom|latest|newest|recent|end)/i;
+    const WEAK_RE = /jump|bottom|present|latest|scroll|newest/i;
+    const BUTTON_SIZE = 40;
+    const GAP = 12;
 
     async function jumpToTop() {
         if (busy) return;
@@ -49,22 +53,19 @@
         }
     }
 
-    function TopButton() {
+    function makeButton(extraStyle) {
         return React.createElement(
-            View,
+            Pressable,
             {
-                pointerEvents: "box-none",
-                style: { position: "absolute", right: 12, bottom: 56 }
-            },
-            React.createElement(
-                Pressable,
-                {
-                    onPress: jumpToTop,
-                    hitSlop: 8,
-                    style: {
-                        width: 40,
-                        height: 40,
-                        borderRadius: 20,
+                onPress: jumpToTop,
+                hitSlop: 8,
+                accessibilityLabel: OUR_LABEL,
+                accessibilityRole: "button",
+                style: [
+                    {
+                        width: BUTTON_SIZE,
+                        height: BUTTON_SIZE,
+                        borderRadius: BUTTON_SIZE / 2,
                         alignItems: "center",
                         justifyContent: "center",
                         backgroundColor: "#5865F2",
@@ -73,120 +74,116 @@
                         shadowOpacity: 0.3,
                         shadowRadius: 4,
                         shadowOffset: { width: 0, height: 2 }
-                    }
-                },
-                React.createElement(Text, { style: { color: "#fff", fontSize: 20, fontWeight: "bold" } }, "↑")
-            )
+                    },
+                    extraStyle
+                ]
+            },
+            React.createElement(Text, { style: { color: "#fff", fontSize: 20, fontWeight: "bold" } }, "↑")
         );
     }
 
-    function nameOf(x) {
-        if (!x || (typeof x !== "function" && typeof x !== "object")) return "";
+    function flatStyle(style) {
         try {
-            return x.displayName || x.name || x.type?.displayName || x.type?.name || x.render?.displayName || x.render?.name || "";
+            return StyleSheet.flatten(style) || {};
         } catch {
-            return "";
+            return {};
         }
     }
 
-    // Every initialized module's exports, its default export, and its named exports.
-    function scan() {
-        const out = [];
-        const mods = metro.modules ?? {};
-        for (const id in mods) {
-            try {
-                const m = mods[id];
-                if (!m?.isInitialized) continue;
-                const exp = m.publicModule?.exports;
-                if (!exp) continue;
+    function record(label, el) {
+        if (seen.size >= 40 && !seen.has(label)) return;
+        const s = flatStyle(el.props.style);
+        const info = seen.get(label) ?? { count: 0 };
+        info.count++;
+        info.type = typeof el.type === "string" ? el.type : el.type?.displayName || el.type?.name || "anonymous";
+        info.style = JSON.stringify({ position: s.position, top: s.top, bottom: s.bottom, left: s.left, right: s.right, w: s.width, h: s.height });
+        seen.set(label, info);
+    }
 
-                const check = (holder, prop, target, via) => {
-                    const n = nameOf(target);
-                    if (n && WEAK_RE.test(n)) out.push({ holder, prop, target, name: n, via, id });
-                };
-
-                if (typeof exp === "function" || (typeof exp === "object" && (exp.type || exp.render))) {
-                    check({ exp }, "exp", exp, "module");
-                }
-                if (exp.default) check(exp, "default", exp.default, "default");
-
-                if (typeof exp === "object") {
-                    const keys = Object.keys(exp);
-                    if (keys.length <= 60) {
-                        for (const k of keys) {
-                            if (k === "default") continue;
-                            if (WEAK_RE.test(k)) check(exp, k, exp[k], "named:" + k);
-                        }
-                    }
-                }
-            } catch {}
+    // Wrap the jump-to-bottom element so our button sits right above it.
+    function addButton(el) {
+        const s = flatStyle(el.props.style);
+        let ours;
+        if (s.position === "absolute") {
+            // The original floats at a fixed spot: put ours at the same spot, one step further up.
+            const offset = BUTTON_SIZE + GAP;
+            const pos = { position: "absolute" };
+            if (s.right != null) pos.right = s.right;
+            if (s.left != null) pos.left = s.left;
+            if (typeof s.bottom === "number") pos.bottom = s.bottom + offset;
+            else if (typeof s.top === "number") pos.top = s.top - offset;
+            else pos.bottom = offset;
+            ours = makeButton(pos);
+        } else {
+            // In normal flow: stack above the original; its container grows upward.
+            ours = makeButton({ alignSelf: "center", marginBottom: GAP });
         }
-        return out;
+        return React.createElement(React.Fragment, null, ours, el);
     }
 
-    function wrap(ret) {
-        if (!ret) return ret;
-        return React.createElement(React.Fragment, null, ret, React.createElement(TopButton));
-    }
+    function onElement(_args, el) {
+        if (inside || !el || typeof el !== "object" || !el.props) return el;
+        const p = el.props;
+        const label = p.accessibilityLabel ?? p["aria-label"];
+        if (typeof label !== "string" || label === OUR_LABEL) return el;
 
-    function tryPatch(c) {
-        const { holder, prop, target } = c;
+        if (WEAK_RE.test(label)) record(label, el);
+        if (!STRONG_RE.test(label)) return el;
+
+        inside = true;
         try {
-            if (typeof target === "function" && prop !== "exp") {
-                unpatches.push(patcher.after(prop, holder, (_a, ret) => wrap(ret)));
-                return true;
+            if (!announced) {
+                announced = true;
+                ui.toasts.showToast('Jump to Top: found "' + label + '"');
             }
-            if (target && typeof target.type === "function") {
-                unpatches.push(patcher.after("type", target, (_a, ret) => wrap(ret))); // React.memo
-                return true;
-            }
-            if (target && typeof target.render === "function") {
-                unpatches.push(patcher.after("render", target, (_a, ret) => wrap(ret))); // forwardRef
-                return true;
-            }
+            return addButton(el);
         } catch (e) {
-            console.error("[JumpToTop] patch failed for " + c.name, e);
+            console.error("[JumpToTop] wrap failed", e);
+            return el;
+        } finally {
+            inside = false;
         }
-        return false;
     }
 
     function Settings() {
+        const lines = [...seen.entries()].map(
+            ([label, i]) => `"${label}" x${i.count} <${i.type}> ${i.style}`
+        );
         return React.createElement(
             ScrollView,
             { style: { flex: 1, padding: 16 } },
             React.createElement(Text, { style: { color: "#fff", fontWeight: "bold", marginBottom: 8 } }, "Jump to Top debug"),
-            ...report.map((line, i) =>
-                React.createElement(Text, { key: i, selectable: true, style: { color: "#ccc", marginBottom: 4, fontSize: 12 } }, line)
-            )
+            React.createElement(
+                Text,
+                { style: { color: "#ccc", marginBottom: 8, fontSize: 12 } },
+                "Elements seen with jump/bottom/scroll-style labels (open a channel and scroll up first, then reopen this page):"
+            ),
+            lines.length
+                ? lines.map((line, i) =>
+                      React.createElement(Text, { key: i, selectable: true, style: { color: "#ccc", marginBottom: 4, fontSize: 12 } }, line)
+                  )
+                : React.createElement(Text, { style: { color: "#ccc", fontSize: 12 } }, "(none seen yet)")
         );
     }
 
     return {
         onLoad() {
-            const found = scan();
-            const strong = found.filter(c => STRONG_RE.test(c.name));
+            const targets = [];
+            const runtime = findByProps("jsx", "jsxs");
+            if (runtime) {
+                targets.push([runtime, "jsx"], [runtime, "jsxs"]);
+                if (runtime.jsxDEV) targets.push([runtime, "jsxDEV"]);
+            }
+            targets.push([React, "createElement"]);
 
-            report = [
-                `strong matches: ${strong.length}`,
-                ...strong.map(c => `  ${c.name} (${c.via}, module ${c.id})`),
-                `weak matches: ${found.length}`,
-                ...found.slice(0, 80).map(c => `  ${c.name} (${c.via}, module ${c.id})`)
-            ];
-            console.log("[JumpToTop]\n" + report.join("\n"));
-
-            let patched = null;
-            for (const c of strong) {
-                if (tryPatch(c)) {
-                    patched = c.name;
-                    break;
+            for (const [obj, name] of targets) {
+                try {
+                    unpatches.push(patcher.after(name, obj, onElement));
+                } catch (e) {
+                    console.error("[JumpToTop] couldn't hook " + name, e);
                 }
             }
-
-            ui.toasts.showToast(
-                patched
-                    ? "Jump to Top: patched " + patched
-                    : `Jump to Top: no jump button found (${found.length} weak matches, see plugin settings)`
-            );
+            ui.toasts.showToast(`Jump to Top: hooked ${unpatches.length} render function(s). Open a channel and scroll up.`);
         },
         onUnload() {
             for (const unpatch of unpatches) unpatch();
