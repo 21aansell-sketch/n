@@ -1,10 +1,4 @@
 (function () {
-    // NOTE: nothing may come before this line (the loader does `return <code>`).
-    //
-    // Platform indicators (PC / Mobile / Web / PS5+console / VR) on status dots, DM list,
-    // DM header and profiles, plus a /device command.
-    // Ported from k1ngop's "platform-indicators" Revenge plugin to the Vendetta/Kettu API.
-    // The "Revenge shims" section below maps the revenge.* calls the original used onto vendetta.*.
     const V = vendetta;
     const { React, ReactNative } = V.metro.common;
     const { findByProps, findByStoreName } = V.metro;
@@ -149,12 +143,14 @@
     const DEFAULTS = {
         legacyEnabled: false,
         dmTopBar: false,
+        dmHeaderAll: true,
         userList: false,
         profileUsername: false,
         fallbackColors: false,
         experimentalStatusDot: true,
         dotYouBar: true,
         statusDotInlineRemaining: true,
+        headerAllDevices: true,
     };
 
     const store = (V.plugin && V.plugin.storage) || {};
@@ -221,6 +217,12 @@
                             value: s?.experimentalStatusDot ?? true,
                             onValueChange: (v) => set({ experimentalStatusDot: v }),
                         }, "enable"),
+                        jsx(Design.TableSwitchRow, {
+                            label: "Show all devices in the DM header",
+                            subLabel: "Show every device next to the name at the top of a DM",
+                            value: s?.dmHeaderAll ?? true,
+                            onValueChange: (v) => set({ dmHeaderAll: v }),
+                        }, "dmHeaderAll"),
                         ...dotRows.map(([key, label, subLabel]) =>
                             jsx(Design.TableSwitchRow, {
                                 label,
@@ -256,6 +258,17 @@
                                 onValueChange: (v) => set({ [key]: v }),
                             }, key),
                         ),
+                    ],
+                }),
+                section("header", {
+                    title: "DM Header",
+                    description: "Show every device the person is on next to their name at the top of a DM.",
+                    children: [
+                        jsx(Design.TableSwitchRow, {
+                            label: "Show all devices in DM header",
+                            value: s?.headerAllDevices ?? true,
+                            onValueChange: (v) => set({ headerAllDevices: v }),
+                        }, "headerAll"),
                     ],
                 }),
                 section("appearance", {
@@ -459,10 +472,10 @@
         }, [rerender, userId]);
     }
 
-    function StatusIcons({ userId, size = 16 }) {
+    function StatusIcons({ userId, size = 16, all = false }) {
         useStatusRerender(userId);
         const statuses = getStatuses(userId) ?? {};
-        const dotPlatform = settings.cache?.experimentalStatusDot ? pickDotPlatform(statuses) : null;
+        const dotPlatform = !all && settings.cache?.experimentalStatusDot ? pickDotPlatform(statuses) : null;
         return jsx(Fragment, {
             children: Object.keys(statuses).filter((p) => p !== dotPlatform).map((p) =>
                 jsx(PlatformIcon, { platform: p, color: statusColor(statuses[p], settings.cache?.fallbackColors), iconSize: size }, p),
@@ -625,10 +638,13 @@
                     cleanup(patcher.after(result.type, "type", (header) => {
                         safely(() => {
                             const userId = findInTree(header, hasUser)?.props?.user?.id;
-                            if (!userId || !inlineIconsAllowed("dmTopBar")) return;
+                            if (!userId) return;
+                            const showAll = settings.cache?.dmHeaderAll ?? true;
+                            if (!showAll && !inlineIconsAllowed("dmTopBar")) return;
+                            const icons = () => jsx(StatusIcons, { userId, all: showAll, size: 18 });
 
                             const container = findInTree(header, (n) => n?.key === "DMTabsV2HeaderIcons");
-                            if (container) { container.props.children = jsx(StatusIcons, { userId }); return; }
+                            if (container) { container.props.children = icons(); return; }
 
                             const inner = header.props?.children?.props?.children?.props?.children?.[1];
                             if (inner && typeof inner.type === "function") {
@@ -636,7 +652,10 @@
                                     unpatch();
                                     safely(() => {
                                         if (!findInTree(r, (n) => n?.key === "DMTabsV2Header-v2")) {
-                                            r.props.children[0]?.props?.children?.push(jsx(StatusIcons, { userId }, "DMTabsV2Header-v2"));
+                                            const row = r.props.children[0]?.props?.children;
+                                            if (Array.isArray(row)) {
+                                                row.push(jsx(ReactNative.View, { style: { flexDirection: "row", alignItems: "center", marginLeft: 6 }, children: icons() }, "DMTabsV2Header-v2"));
+                                            }
                                         }
                                     });
                                     return r;
