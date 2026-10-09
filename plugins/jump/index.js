@@ -2,7 +2,7 @@
     const { metro, patcher, ui } = vendetta;
     const { React, ReactNative } = metro.common;
     const { findByProps, findByStoreName } = metro;
-    const { View, Pressable, Text } = ReactNative;
+    const { View, Pressable, Text, ScrollView } = ReactNative;
 
     const RestAPI = findByProps("getAPIBaseURL", "get");
     const MessageActions = findByProps("jumpToMessage");
@@ -10,8 +10,12 @@
 
     const unpatches = [];
     let busy = false;
+    let report = []; // lines shown on the settings page
 
-    const NAME_RE = /jump.{0,12}(present|bottom|latest|recent)|(present|bottom).{0,12}jump/i;
+    // Strong match: what we expect the jump-to-bottom button to be called.
+    const STRONG_RE = /jump.{0,12}(present|bottom|latest|recent|new)|scroll.{0,12}(bottom|present|latest|end)|(bottom|present|latest).{0,12}(jump|scroll)/i;
+    // Weak match: only used to show candidates on the settings page.
+    const WEAK_RE = /jump|scroll.?to|to.?(bottom|present|latest)|present|latest/i;
 
     async function jumpToTop() {
         if (busy) return;
@@ -77,13 +81,17 @@
     }
 
     function nameOf(x) {
-        if (!x) return "";
-        return x.displayName || x.name || x.type?.displayName || x.type?.name || x.render?.displayName || x.render?.name || "";
+        if (!x || (typeof x !== "function" && typeof x !== "object")) return "";
+        try {
+            return x.displayName || x.name || x.type?.displayName || x.type?.name || x.render?.displayName || x.render?.name || "";
+        } catch {
+            return "";
+        }
     }
 
-    // Scan every loaded Discord module for something named like a jump-to-bottom button.
-    function findJumpComponents() {
-        const found = [];
+    // Every initialized module's exports, its default export, and its named exports.
+    function scan() {
+        const out = [];
         const mods = metro.modules ?? {};
         for (const id in mods) {
             try {
@@ -91,16 +99,29 @@
                 if (!m?.isInitialized) continue;
                 const exp = m.publicModule?.exports;
                 if (!exp) continue;
-                for (const key of ["default", null]) {
-                    const holder = key ? exp : { [""]: exp };
-                    const prop = key ?? "";
-                    const target = holder[prop];
+
+                const check = (holder, prop, target, via) => {
                     const n = nameOf(target);
-                    if (n && NAME_RE.test(n)) found.push({ holder, prop, name: n, target });
+                    if (n && WEAK_RE.test(n)) out.push({ holder, prop, target, name: n, via, id });
+                };
+
+                if (typeof exp === "function" || (typeof exp === "object" && (exp.type || exp.render))) {
+                    check({ exp }, "exp", exp, "module");
+                }
+                if (exp.default) check(exp, "default", exp.default, "default");
+
+                if (typeof exp === "object") {
+                    const keys = Object.keys(exp);
+                    if (keys.length <= 60) {
+                        for (const k of keys) {
+                            if (k === "default") continue;
+                            if (WEAK_RE.test(k)) check(exp, k, exp[k], "named:" + k);
+                        }
+                    }
                 }
             } catch {}
         }
-        return found;
+        return out;
     }
 
     function wrap(ret) {
@@ -108,50 +129,69 @@
         return React.createElement(React.Fragment, null, ret, React.createElement(TopButton));
     }
 
+    function tryPatch(c) {
+        const { holder, prop, target } = c;
+        try {
+            if (typeof target === "function" && prop !== "exp") {
+                unpatches.push(patcher.after(prop, holder, (_a, ret) => wrap(ret)));
+                return true;
+            }
+            if (target && typeof target.type === "function") {
+                unpatches.push(patcher.after("type", target, (_a, ret) => wrap(ret))); // React.memo
+                return true;
+            }
+            if (target && typeof target.render === "function") {
+                unpatches.push(patcher.after("render", target, (_a, ret) => wrap(ret))); // forwardRef
+                return true;
+            }
+        } catch (e) {
+            console.error("[JumpToTop] patch failed for " + c.name, e);
+        }
+        return false;
+    }
+
+    function Settings() {
+        return React.createElement(
+            ScrollView,
+            { style: { flex: 1, padding: 16 } },
+            React.createElement(Text, { style: { color: "#fff", fontWeight: "bold", marginBottom: 8 } }, "Jump to Top debug"),
+            ...report.map((line, i) =>
+                React.createElement(Text, { key: i, selectable: true, style: { color: "#ccc", marginBottom: 4, fontSize: 12 } }, line)
+            )
+        );
+    }
+
     return {
         onLoad() {
-            const candidates = findJumpComponents();
-            console.log("[JumpToTop] candidates: " + candidates.map(c => c.name).join(", "));
+            const found = scan();
+            const strong = found.filter(c => STRONG_RE.test(c.name));
+
+            report = [
+                `strong matches: ${strong.length}`,
+                ...strong.map(c => `  ${c.name} (${c.via}, module ${c.id})`),
+                `weak matches: ${found.length}`,
+                ...found.slice(0, 80).map(c => `  ${c.name} (${c.via}, module ${c.id})`)
+            ];
+            console.log("[JumpToTop]\n" + report.join("\n"));
 
             let patched = null;
-            for (const c of candidates) {
-                const { holder, prop, target } = c;
-                try {
-                    if (typeof target === "function" && key(holder, prop)) {
-                        unpatches.push(patcher.after(prop, holder, (_a, ret) => wrap(ret)));
-                        patched = c.name;
-                    } else if (target?.type && typeof target.type === "function") {
-                        // React.memo wrapper
-                        unpatches.push(patcher.after("type", target, (_a, ret) => wrap(ret)));
-                        patched = c.name;
-                    } else if (typeof target?.render === "function") {
-                        // React.forwardRef wrapper
-                        unpatches.push(patcher.after("render", target, (_a, ret) => wrap(ret)));
-                        patched = c.name;
-                    }
-                } catch (e) {
-                    console.error("[JumpToTop] patch failed for " + c.name, e);
+            for (const c of strong) {
+                if (tryPatch(c)) {
+                    patched = c.name;
+                    break;
                 }
-                if (patched) break;
             }
 
-            if (patched) {
-                ui.toasts.showToast("Jump to Top: patched " + patched);
-            } else {
-                ui.toasts.showToast(
-                    candidates.length
-                        ? "Jump to Top: found " + candidates.map(c => c.name).join(", ") + " but couldn't patch"
-                        : "Jump to Top: no jump button component found"
-                );
-            }
+            ui.toasts.showToast(
+                patched
+                    ? "Jump to Top: patched " + patched
+                    : `Jump to Top: no jump button found (${found.length} weak matches, see plugin settings)`
+            );
         },
         onUnload() {
             for (const unpatch of unpatches) unpatch();
             unpatches.length = 0;
-        }
+        },
+        settings: Settings
     };
-
-    function key(holder, prop) {
-        return holder && prop in holder && prop !== "";
-    }
 })()
