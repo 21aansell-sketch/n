@@ -55,29 +55,35 @@
         },
     };
 
-    // Finds already-loaded modules matching `test` and calls `cb(module)` for each.
-    // Re-scans after a few seconds to catch modules that load lazily.
-    function getModules(test, cb) {
-        const seen = new Set();
+    // Finds loaded modules matching `test` and calls `cb(module)` for each.
+    // Keeps rescanning, because Discord only initialises screens like profiles when first opened.
+    const dbg = { patches: {}, modules: 0 };
+    let nextLabel = 0;
+    function getModules(test, cb, label) {
+        label = label || ("patch" + (++nextLabel));
+        dbg.patches[label] = dbg.patches[label] || 0;
+        const done = new Set();
         function scan() {
             const mods = V.metro.modules || window.modules;
             if (!mods) return;
             for (const id in mods) {
-                if (seen.has(id)) continue;
+                if (done.has(id)) continue;
                 try {
                     const m = mods[id];
                     if (!m || !m.isInitialized) continue;
+                    done.add(id);
                     const ex = m.publicModule && m.publicModule.exports;
                     if (!ex || (typeof ex !== "object" && typeof ex !== "function")) continue;
                     if (!test(ex)) continue;
-                    seen.add(id);
+                    if (label) dbg.patches[label] = (dbg.patches[label] || 0) + 1;
                     cb(ex);
                 } catch (e) {}
             }
+            dbg.modules = done.size;
         }
         scan();
-        const timers = [setTimeout(scan, 3000), setTimeout(scan, 10000)];
-        return () => timers.forEach(clearTimeout);
+        const timer = setInterval(scan, 2000);
+        return () => clearInterval(timer);
     }
 
     const storeCache = {};
@@ -150,6 +156,7 @@
         legacyEnabled: false,
         dmTopBar: false,
         dmHeaderAll: true,
+        profileAll: true,
         userList: false,
         profileUsername: false,
         fallbackColors: false,
@@ -223,6 +230,12 @@
                             value: s?.experimentalStatusDot ?? true,
                             onValueChange: (v) => set({ experimentalStatusDot: v }),
                         }, "enable"),
+                        jsx(Design.TableSwitchRow, {
+                            label: "Show all devices next to profile names",
+                            subLabel: "Show every device next to the name on profiles",
+                            value: s?.profileAll ?? true,
+                            onValueChange: (v) => set({ profileAll: v }),
+                        }, "profileAll"),
                         jsx(Design.TableSwitchRow, {
                             label: "Show all devices in the DM header",
                             subLabel: "Show every device next to the name at the top of a DM",
@@ -632,6 +645,25 @@
         }));
     }
 
+    function registerDebugCommand() {
+        cleanup(V.commands.registerCommand({
+            name: "devicedebug",
+            displayName: "devicedebug",
+            description: "Show which Device Indicator patches attached",
+            displayDescription: "Show which Device Indicator patches attached",
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            options: [],
+            execute(args, ctx) {
+                const names = ["ChannelHeader", "UserProfileContent", "DisplayName", "UserRow", "MessagesItemChannelContent", "AvatarBundle"];
+                const lines = ["**Device Indicator debug**", "Modules scanned: " + dbg.modules];
+                Object.keys(dbg.patches).forEach((k, i) => lines.push((names[i] || k) + ": " + (dbg.patches[k] ? "attached x" + dbg.patches[k] : "NOT FOUND")));
+                reply(ctx && ctx.channel && ctx.channel.id, lines.join("\n"));
+            },
+        }));
+    }
+
     // ---------------------------------------------------------------- Patches
 
     function start() {
@@ -693,7 +725,10 @@
                                     cleanup(patcher.after(name, "type", (c) => {
                                         safely(() => {
                                             const userId = name.props?.user?.id;
-                                            if (userId && inlineIconsAllowed("profileUsername")) c?.props?.children?.push(jsx(StatusIcons, { userId }, "UserProfileIcons"));
+                                            const kids = c?.props?.children;
+                                            if (!userId || !Array.isArray(kids) || kids.some((k) => k?.key === "DeviceIcons")) return;
+                                            const all = settings.cache?.profileAll ?? true;
+                                            if (all || inlineIconsAllowed("profileUsername")) kids.push(jsx(StatusIcons, { userId, all }, "DeviceIcons"));
                                         });
                                         return c;
                                     }));
@@ -714,9 +749,10 @@
                 safely(() => {
                     const user = args[0]?.user;
                     const children = result.props?.children?.props?.children?.[0]?.props?.children;
-                    if (user?.id && Array.isArray(children) && inlineIconsAllowed("profileUsername")) {
-                        if (children.some((c) => c?.key === "DisplayNameIcons")) return;
-                        children.push(jsx(StatusIcons, { userId: user.id }, "DisplayNameIcons"));
+                    const all = settings.cache?.profileAll ?? true;
+                    if (user?.id && Array.isArray(children) && (all || inlineIconsAllowed("profileUsername"))) {
+                        if (children.some((c) => c?.key === "DeviceIcons")) return;
+                        children.push(jsx(StatusIcons, { userId: user.id, all }, "DeviceIcons"));
                     }
                 });
                 return result;
@@ -800,7 +836,7 @@
 
     return {
         onLoad() {
-            try { registerDeviceCommand(); } catch (e) { console.error("[Platform Indicators] command", e); }
+            try { registerDeviceCommand(); registerDebugCommand(); } catch (e) { console.error("[Platform Indicators] command", e); }
             try { start(); } catch (e) {
                 showToast("Platform Indicators failed to start");
                 console.error("[Platform Indicators] start", e);
