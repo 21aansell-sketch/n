@@ -1,7 +1,7 @@
 (function () {
     const { metro, patcher, ui } = vendetta;
     const { React, ReactNative } = metro.common;
-    const { findByProps, findByName, findByStoreName } = metro;
+    const { findByProps, findByStoreName } = metro;
     const { View, Pressable, Text } = ReactNative;
 
     const RestAPI = findByProps("getAPIBaseURL", "get");
@@ -10,6 +10,8 @@
 
     const unpatches = [];
     let busy = false;
+
+    const NAME_RE = /jump.{0,12}(present|bottom|latest|recent)|(present|bottom).{0,12}jump/i;
 
     async function jumpToTop() {
         if (busy) return;
@@ -69,36 +71,87 @@
                         shadowOffset: { width: 0, height: 2 }
                     }
                 },
-                React.createElement(Text, { style: { color: "#fff", fontSize: 20, fontWeight: "bold" } }, "\u2191")
+                React.createElement(Text, { style: { color: "#fff", fontSize: 20, fontWeight: "bold" } }, "↑")
             )
         );
     }
 
-    // Component names the "jump to bottom" bar has gone by; the first one found gets patched.
-    const CANDIDATES = ["JumpToPresentBar", "ChannelJumpToPresent", "JumpToPresentButton", "JumpToBottom"];
+    function nameOf(x) {
+        if (!x) return "";
+        return x.displayName || x.name || x.type?.displayName || x.type?.name || x.render?.displayName || x.render?.name || "";
+    }
+
+    // Scan every loaded Discord module for something named like a jump-to-bottom button.
+    function findJumpComponents() {
+        const found = [];
+        const mods = metro.modules ?? {};
+        for (const id in mods) {
+            try {
+                const m = mods[id];
+                if (!m?.isInitialized) continue;
+                const exp = m.publicModule?.exports;
+                if (!exp) continue;
+                for (const key of ["default", null]) {
+                    const holder = key ? exp : { [""]: exp };
+                    const prop = key ?? "";
+                    const target = holder[prop];
+                    const n = nameOf(target);
+                    if (n && NAME_RE.test(n)) found.push({ holder, prop, name: n, target });
+                }
+            } catch {}
+        }
+        return found;
+    }
+
+    function wrap(ret) {
+        if (!ret) return ret;
+        return React.createElement(React.Fragment, null, ret, React.createElement(TopButton));
+    }
 
     return {
         onLoad() {
-            for (const name of CANDIDATES) {
-                const mod = findByName(name, false);
-                if (!mod || typeof mod.default !== "function") continue;
+            const candidates = findJumpComponents();
+            console.log("[JumpToTop] candidates: " + candidates.map(c => c.name).join(", "));
 
-                unpatches.push(
-                    patcher.after("default", mod, (_args, ret) => {
-                        // Only add our button while the jump-to-bottom button is actually showing
-                        if (!ret) return ret;
-                        return React.createElement(React.Fragment, null, ret, React.createElement(TopButton));
-                    })
-                );
-                console.log("[JumpToTop] patched " + name);
-                return;
+            let patched = null;
+            for (const c of candidates) {
+                const { holder, prop, target } = c;
+                try {
+                    if (typeof target === "function" && key(holder, prop)) {
+                        unpatches.push(patcher.after(prop, holder, (_a, ret) => wrap(ret)));
+                        patched = c.name;
+                    } else if (target?.type && typeof target.type === "function") {
+                        // React.memo wrapper
+                        unpatches.push(patcher.after("type", target, (_a, ret) => wrap(ret)));
+                        patched = c.name;
+                    } else if (typeof target?.render === "function") {
+                        // React.forwardRef wrapper
+                        unpatches.push(patcher.after("render", target, (_a, ret) => wrap(ret)));
+                        patched = c.name;
+                    }
+                } catch (e) {
+                    console.error("[JumpToTop] patch failed for " + c.name, e);
+                }
+                if (patched) break;
             }
-            console.error("[JumpToTop] couldn't find the jump-to-bottom component");
-            ui.toasts.showToast("Jump to Top: couldn't find the jump button");
+
+            if (patched) {
+                ui.toasts.showToast("Jump to Top: patched " + patched);
+            } else {
+                ui.toasts.showToast(
+                    candidates.length
+                        ? "Jump to Top: found " + candidates.map(c => c.name).join(", ") + " but couldn't patch"
+                        : "Jump to Top: no jump button component found"
+                );
+            }
         },
         onUnload() {
             for (const unpatch of unpatches) unpatch();
             unpatches.length = 0;
         }
     };
+
+    function key(holder, prop) {
+        return holder && prop in holder && prop !== "";
+    }
 })()
