@@ -1,13 +1,13 @@
 {
   "name": "Jump to Top",
-  "description": "moid_67 i am hello",
+  "description": "moid_67 i am Hello",
   "authors": [
     {
       "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "e89f295811e57db40a80edac099bae7bc7968c82e703104b1ffdd492053cc0c2",
+  "hash": "d15aa6dbd9ebe465d0268490d566ed8fe499b1aea35c232d3a2cd6037a1cb254",
   "vendetta": {
     "icon": "ic_upvote"
   }
