@@ -1,4 +1,10 @@
 (function () {
+    // NOTE: nothing may come before this line (the loader does `return <code>`).
+    //
+    // Platform indicators (PC / Mobile / Web / PS5+console / VR) on status dots, DM list,
+    // DM header and profiles, plus a /device command.
+    // Ported from k1ngop's "platform-indicators" Revenge plugin to the Vendetta/Kettu API.
+    // The "Revenge shims" section below maps the revenge.* calls the original used onto vendetta.*.
     const V = vendetta;
     const { React, ReactNative } = V.metro.common;
     const { findByProps, findByStoreName } = V.metro;
