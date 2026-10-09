@@ -1,13 +1,13 @@
 {
   "name": "Jump to Top",
-  "description": "moid_67 i am Hello",
+  "description": "Adds a button above the jump to bottom button that jumps to the first message in the channel or DM.",
   "authors": [
     {
       "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "0638e0157f0320c0b920c47e3cd2b5a18d1883b6fb548146dde1f5beaaa2b2d5",
+  "hash": "94d6c068885acde751f79fd0c3ece7dbaddbcdf1f816a46223b1dd7a4bd05639",
   "vendetta": {
     "icon": "ic_upvote"
   }
