@@ -9,7 +9,38 @@
     const pending = new Set();
     let unregister;
 
+    // Fast path: talk to Discord's REST API directly. This skips the client's send queue
+    // and optimistic-message handling, so the delete fires the moment the server replies.
+    const RestAPI = findByProps("getAPIBaseURL", "get");
+    const restDelete = RestAPI && (RestAPI.del ?? RestAPI.delete);
+
+    async function sendAndDeleteFast(channelId, content, delayMs, silent) {
+        const res = await RestAPI.post({
+            url: `/channels/${channelId}/messages`,
+            body: {
+                content,
+                tts: false,
+                nonce: String(Date.now()) + String(Math.floor(Math.random() * 1e6)),
+                // 4096 = SUPPRESS_NOTIFICATIONS, the flag the app sets for "@silent"
+                ...(silent ? { flags: 4096 } : {})
+            }
+        });
+        const id = res?.body?.id;
+        if (!id) throw new Error("no message id in response");
+        if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+        await restDelete.call(RestAPI, { url: `/channels/${channelId}/messages/${id}` });
+    }
+
     function sendAndDelete(channelId, content, delayMs, silent) {
+        if (RestAPI?.post && restDelete) {
+            sendAndDeleteFast(channelId, content, delayMs, silent)
+                .catch(e => console.error("[GhostPing] fast path failed", e));
+            return;
+        }
+        return sendAndDeleteSlow(channelId, content, delayMs, silent);
+    }
+
+    function sendAndDeleteSlow(channelId, content, delayMs, silent) {
         const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
         let done = false;
         let timeout;
@@ -24,9 +55,10 @@
         const remove = (id) => {
             if (done) return;
             cleanup();
-            setTimeout(() => {
+            const doDelete = () => {
                 try { Deleter.deleteMessage(channelId, id); } catch (e) { console.error("[GhostPing] delete failed", e); }
-            }, delayMs);
+            };
+            if (delayMs > 0) setTimeout(doDelete, delayMs); else doDelete();
         };
 
         // The confirmed (non-optimistic) message arrives via MESSAGE_CREATE with our nonce.
