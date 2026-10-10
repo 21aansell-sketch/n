@@ -320,15 +320,95 @@
     // ---------------------------------------------------------------------
     // Patches
     // ---------------------------------------------------------------------
+    const DEBUG = true;
+    const log = (...a) => console.log("[PermissionViewer]", ...a);
+    const toast = msg => {
+        try {
+            showToast(`Permission Viewer: ${msg}`, getAssetIDByName("Small"));
+        } catch {}
+    };
+
+    const isElement = n => !!n && typeof n === "object" && !!n.$$typeof;
+    const nameOf = n => n?.type?.displayName ?? n?.type?.name ?? "";
+
+    function looksLikeGroup(item) {
+        if (!isElement(item)) return false;
+        const t = item.type;
+        if (t && (t === Design.ActionSheetRow?.Group || t === Design.TableRowGroup)) return true;
+        return /Group/.test(nameOf(item));
+    }
+
+    // Depth-first walk over a React element tree. visit(array, element) is called
+    // with the array for arrays and the element for elements; return true to stop.
+    function walkTree(node, visit, seen = new Set(), depth = 0) {
+        if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return false;
+        seen.add(node);
+        if (Array.isArray(node)) {
+            if (visit(node, null)) return true;
+            return node.some(c => walkTree(c, visit, seen, depth + 1));
+        }
+        if (!isElement(node)) return false;
+        if (visit(null, node)) return true;
+        const props = node.props ?? {};
+        for (const key of Object.keys(props)) {
+            const v = props[key];
+            if (v && typeof v === "object" && walkTree(v, visit, seen, depth + 1)) return true;
+        }
+        return false;
+    }
+
+    function outline(node, depth = 0) {
+        if (depth > 5 || node == null) return "";
+        const pad = "  ".repeat(depth);
+        if (Array.isArray(node)) {
+            return `${pad}[array ${node.length}]\n` + node.map(c => outline(c, depth + 1)).join("");
+        }
+        if (!isElement(node)) return `${pad}${typeof node}\n`;
+        return `${pad}<${nameOf(node) || typeof node.type}>\n` + outline(node.props?.children, depth + 1);
+    }
+
+    // Returns true when the group was inserted (or was already present).
     function insertGroup(res, group) {
+        let done = false;
+
+        // 1) An array of action-row groups: put ours first.
+        walkTree(res, arr => {
+            if (arr && arr.length && arr.some(looksLikeGroup)) {
+                if (!arr.some(c => c?.key === GROUP_KEY)) arr.unshift(group);
+                return (done = true);
+            }
+            return false;
+        });
+        if (done) return true;
+
+        // 2) The ActionSheet element itself: prepend to its children.
+        walkTree(res, (_, el) => {
+            if (el && el.type === Design.ActionSheet) {
+                const kids = el.props.children;
+                const arr = Array.isArray(kids) ? kids : kids == null ? [] : [kids];
+                if (arr.some(c => c?.key === GROUP_KEY)) return (done = true);
+                try {
+                    el.props.children = [group, ...arr];
+                    done = true;
+                } catch {}
+                return done;
+            }
+            return false;
+        });
+        if (done) return true;
+
+        // 3) Any View with array children.
         const container = findInReactTree(
             res,
             n => n?.type?.displayName === "View" && Array.isArray(n?.props?.children),
         );
-        if (!container) return;
-        const children = container.props.children;
-        if (children.some(c => c?.key === GROUP_KEY)) return;
-        children.unshift(group);
+        if (container) {
+            const children = container.props.children;
+            if (!children.some(c => c?.key === GROUP_KEY)) children.unshift(group);
+            return true;
+        }
+
+        return false;
     }
 
     const SHEET_RULES = [
@@ -336,8 +416,8 @@
             match: /^GuildActionSheet/,
             patch(res, props) {
                 const guild = props?.guild;
-                if (!guild) return;
-                insertGroup(
+                if (!guild) return false;
+                return insertGroup(
                     res,
                     h(
                         Design.ActionSheetRow.Group,
@@ -356,8 +436,8 @@
             patch(res, props) {
                 const channelId = props?.channelId;
                 const channel = channelId && ChannelStore.getChannel(channelId);
-                if (!channel || channel.isDM?.() || !channel.guild_id) return;
-                insertGroup(
+                if (!channel || channel.isDM?.() || !channel.guild_id) return true;
+                return insertGroup(
                     res,
                     h(
                         Design.ActionSheetRow.Group,
@@ -396,13 +476,20 @@
                         const rule = SHEET_RULES.find(r => r.match.test(String(key)) || r.match.test(name));
                         if (!rule) return;
 
+                        if (DEBUG) log("matched sheet", key, name);
                         patched.add(instance);
                         patches.push(
                             after("default", instance, ([props], res) => {
                                 try {
-                                    rule.patch(res, props);
+                                    const ok = rule.patch(res, props);
+                                    if (DEBUG) log(`sheet "${key}" patched:`, ok);
+                                    if (ok === false) {
+                                        log("no insertion point; tree outline:\n" + outline(res));
+                                        toast(`couldn't add button to ${name || key}`);
+                                    }
                                 } catch (e) {
                                     console.error("[PermissionViewer] sheet patch failed", e);
+                                    toast(`error patching ${name || key}: ${e?.message ?? e}`);
                                 }
                             }),
                         );
@@ -446,22 +533,48 @@
     // ---------------------------------------------------------------------
     return {
         onLoad() {
-            Design = findByProps("ActionSheetRow", "BottomSheetTitleHeader");
-            LazyActionSheet = findByProps("openLazy", "hideActionSheet");
-            ChannelStore = findByStoreName("ChannelStore");
-            GuildRoleStore = findByStoreName("GuildRoleStore");
-            GuildMemberStore = findByStoreName("GuildMemberStore");
-            UserStore = findByStoreName("UserStore");
-            useStateFromStores = findByProps("useStateFromStores")?.useStateFromStores;
-            UserActions = findByProps("fetchProfile", "getUser");
+            try {
+                Design =
+                    findByProps("ActionSheetRow", "BottomSheetTitleHeader") ??
+                    findByProps("ActionSheetRow", "ActionSheet") ??
+                    findByProps("ActionSheetRow");
+                LazyActionSheet = findByProps("openLazy", "hideActionSheet");
+                ChannelStore = findByStoreName("ChannelStore");
+                GuildRoleStore = findByStoreName("GuildRoleStore");
+                GuildMemberStore = findByStoreName("GuildMemberStore");
+                UserStore = findByStoreName("UserStore");
+                useStateFromStores = findByProps("useStateFromStores")?.useStateFromStores;
+                UserActions = findByProps("fetchProfile", "getUser");
 
-            if (!Design || !LazyActionSheet || !ChannelStore || !GuildRoleStore || !GuildMemberStore || !UserStore || !useStateFromStores) {
-                showToast("Permission Viewer: couldn't find required Discord modules", getAssetIDByName("Small"));
-                return;
+                const missing = Object.entries({
+                    Design,
+                    LazyActionSheet,
+                    ChannelStore,
+                    GuildRoleStore,
+                    GuildMemberStore,
+                    UserStore,
+                    useStateFromStores,
+                })
+                    .filter(([, v]) => !v)
+                    .map(([k]) => k);
+
+                if (missing.length) {
+                    log("missing modules:", missing.join(", "));
+                    toast(`missing modules: ${missing.join(", ")}`);
+                    return;
+                }
+
+                if (DEBUG) {
+                    log("Design exports:", Object.keys(Design).join(", "));
+                }
+
+                patchActionSheets();
+                patchUserProfileMenu();
+                toast("loaded");
+            } catch (e) {
+                console.error("[PermissionViewer] onLoad failed", e);
+                toast(`failed to load: ${e?.message ?? e}`);
             }
-
-            patchActionSheets();
-            patchUserProfileMenu();
         },
 
         onUnload() {
