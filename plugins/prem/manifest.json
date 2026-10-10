@@ -1,0 +1,14 @@
+{
+  "name": "Permission Viewer",
+  "description": "hidden channels+permission viwer = spinning apples holy iq",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "80a669fcffc7b4b6c33903ac56b3b5fede4d0063909ae2b7433895632f86080d",
+  "vendetta": {
+    "icon": "ShieldIcon"
+  }
+}
