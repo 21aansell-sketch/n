@@ -1,13 +1,13 @@
 {
   "name": "Permission Viewer",
-  "description": "hidden channels+permission viwer = spinning apples holy iq",
+  "description": "View server roles, role permissions, channel permission overwrites, and a member's combined permissions.",
   "authors": [
     {
-      "name": "21aansell-sketch"
+      "name": "21aansell"
     }
   ],
   "main": "index.js",
-  "hash": "80a669fcffc7b4b6c33903ac56b3b5fede4d0063909ae2b7433895632f86080d",
+  "hash": "4517e9b02e6b07c6e8419696bb053422a759b87c3d16317eeb8cbd4adf74f951",
   "vendetta": {
     "icon": "ShieldIcon"
   }
