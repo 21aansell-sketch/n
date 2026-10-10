@@ -1,13 +1,13 @@
 {
   "name": "Permission Viewer",
-  "description": "View server roles, role permissions, channel permission overwrites, and a member's combined permissions.",
+  "description": "ok",
   "authors": [
     {
-      "name": "21aansell"
+      "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
-  "hash": "4517e9b02e6b07c6e8419696bb053422a759b87c3d16317eeb8cbd4adf74f951",
+  "hash": "897987683a2d5e9033012f6d96b5b9532e2a594556889fefc37c23d222a444c9",
   "vendetta": {
     "icon": "ShieldIcon"
   }
