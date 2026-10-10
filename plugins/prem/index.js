@@ -411,51 +411,82 @@
         return false;
     }
 
+    // Pull a render function out of a function / forwardRef / memo component type.
+    function renderFnOf(type) {
+        if (typeof type === "function") return type.prototype?.isReactComponent ? null : type;
+        if (type && typeof type === "object") {
+            if (typeof type.render === "function") return type.render;
+            if (type.type) return renderFnOf(type.type);
+        }
+        return null;
+    }
+
+    const wrapCache = new WeakMap();
+
+    // Try to insert `group` into `res`. If the sheet's real content is rendered one
+    // component deeper, wrap that component so we can edit what it returns.
+    // Returns the tree to render, or null if nothing worked.
+    function inject(res, group, depth = 0) {
+        if (!res) return null;
+        if (insertGroup(res, group)) return res;
+        if (depth >= 5 || !isElement(res)) return null;
+
+        const render = renderFnOf(res.type);
+        if (!render) return null;
+
+        let Wrapped = wrapCache.get(res.type);
+        if (!Wrapped) {
+            Wrapped = function PermissionViewerWrapped(allProps) {
+                const { __pvGroup, __pvDepth, ...rest } = allProps;
+                const out = render(rest, null);
+                const injected = inject(out, __pvGroup, __pvDepth);
+                return injected ?? out;
+            };
+            wrapCache.set(res.type, Wrapped);
+        }
+
+        return h(Wrapped, { ...res.props, key: res.key, __pvGroup: group, __pvDepth: depth + 1 });
+    }
+
     const SHEET_RULES = [
         {
             match: /^GuildActionSheet/,
-            patch(res, props) {
+            build(props) {
                 const guild = props?.guild;
-                if (!guild) return false;
-                return insertGroup(
-                    res,
-                    h(
-                        Design.ActionSheetRow.Group,
-                        { key: GROUP_KEY },
-                        h(Design.ActionSheetRow, {
-                            label: "Server Roles",
-                            onPress: () =>
-                                openSheet(ServerRolesSheet, `guild-roles-${guild.id}`, { guild }, true),
-                        }),
-                    ),
+                if (!guild) return null;
+                return h(
+                    Design.ActionSheetRow.Group,
+                    { key: GROUP_KEY },
+                    h(Design.ActionSheetRow, {
+                        label: "Server Roles",
+                        onPress: () =>
+                            openSheet(ServerRolesSheet, `guild-roles-${guild.id}`, { guild }, true),
+                    }),
                 );
             },
         },
         {
             match: /^ChannelLongPress/,
-            patch(res, props) {
+            build(props) {
                 const channelId = props?.channelId;
                 const channel = channelId && ChannelStore.getChannel(channelId);
-                if (!channel || channel.isDM?.() || !channel.guild_id) return true;
-                return insertGroup(
-                    res,
-                    h(
-                        Design.ActionSheetRow.Group,
-                        { key: GROUP_KEY },
-                        h(Design.ActionSheetRow, {
-                            label: "Channel Permissions",
-                            icon: h(Design.TableRowIcon ?? View, {
-                                source: getAssetIDByName("ShieldIcon") ?? getAssetIDByName("ic_shield"),
-                            }),
-                            onPress: () =>
-                                openSheet(
-                                    ChannelOverwritesSheet,
-                                    `channel-overwrites-${channelId}`,
-                                    { channelId },
-                                    true,
-                                ),
+                if (!channel || channel.isDM?.() || !channel.guild_id) return null;
+                return h(
+                    Design.ActionSheetRow.Group,
+                    { key: GROUP_KEY },
+                    h(Design.ActionSheetRow, {
+                        label: "Channel Permissions",
+                        icon: h(Design.TableRowIcon ?? View, {
+                            source: getAssetIDByName("ShieldIcon") ?? getAssetIDByName("ic_shield"),
                         }),
-                    ),
+                        onPress: () =>
+                            openSheet(
+                                ChannelOverwritesSheet,
+                                `channel-overwrites-${channelId}`,
+                                { channelId },
+                                true,
+                            ),
+                    }),
                 );
             },
         },
@@ -481,15 +512,20 @@
                         patches.push(
                             after("default", instance, ([props], res) => {
                                 try {
-                                    const ok = rule.patch(res, props);
-                                    if (DEBUG) log(`sheet "${key}" patched:`, ok);
-                                    if (ok === false) {
-                                        log("no insertion point; tree outline:\n" + outline(res));
-                                        toast(`couldn't add button to ${name || key}`);
+                                    const group = rule.build(props);
+                                    if (!group) return;
+
+                                    const out = inject(res, group);
+                                    if (out) {
+                                        if (DEBUG) log(`sheet "${key}" patched`);
+                                        return out;
                                     }
+
+                                    log("no insertion point; tree outline:\n" + outline(res));
+                                    toast(`couldn't add button (root: ${nameOf(res) || typeof res?.type})`);
                                 } catch (e) {
                                     console.error("[PermissionViewer] sheet patch failed", e);
-                                    toast(`error patching ${name || key}: ${e?.message ?? e}`);
+                                    toast(`error patching sheet: ${e?.message ?? e}`);
                                 }
                             }),
                         );
