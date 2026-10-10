@@ -43,12 +43,11 @@
         const res = MessageActions.sendMessage(
             channelId,
             {
-                content,
+                // Discord turns a leading "@silent " into the suppress-notifications flag server-side
+                content: silent ? `@silent ${content}` : content,
                 invalidEmojis: [],
                 tts: false,
-                validNonShortcutEmojis: [],
-                // 4096 = SUPPRESS_NOTIFICATIONS (same flag the @silent prefix sets)
-                ...(silent ? { flags: 4096 } : {})
+                validNonShortcutEmojis: []
             },
             undefined,
             { nonce }
