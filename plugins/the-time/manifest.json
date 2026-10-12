@@ -1,0 +1,14 @@
+{
+  "name": "whats the time?",
+  "description": "time to get a watch hahahahahaha",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "ef2f7900c2f47086123ca7ac6435ba287f6e66f95dfbaafab2c062391557a90c",
+  "vendetta": {
+    "icon": "ic_clock"
+  }
+}
