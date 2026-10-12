@@ -1,5 +1,5 @@
 (function () {
-    const { findByProps } = vendetta.metro;
+    const { findByProps, findByStoreName } = vendetta.metro;
     const { before } = vendetta.patcher;
     const { registerCommand } = vendetta.commands;
 
@@ -23,6 +23,25 @@
         return true;
     }
 
+    function patchLocalView() {
+        const dispatcher = findByProps("dispatch", "subscribe");
+        const userStore = findByStoreName("UserStore");
+        if (!dispatcher || !userStore) return false;
+
+        unpatches.push(
+            before("dispatch", dispatcher, (args) => {
+                const event = args[0];
+                if (!enabled || !event || event.type !== "VOICE_STATE_UPDATES") return;
+                const myId = userStore.getCurrentUser?.()?.id;
+                if (!myId || !Array.isArray(event.voiceStates)) return;
+                for (const voiceState of event.voiceStates) {
+                    if (voiceState.userId === myId) voiceState.selfVideo = false;
+                }
+            })
+        );
+        return true;
+    }
+
     function reply(ctx, content) {
         const messages = findByProps("sendBotMessage");
         messages?.sendBotMessage?.(ctx.channel.id, content);
@@ -32,6 +51,9 @@
         onLoad() {
             if (!patchSocket()) {
                 console.warn("[FakeCamera] Could not find the gateway socket to patch.");
+            }
+            if (!patchLocalView()) {
+                console.warn("[FakeCamera] Could not find the dispatcher to patch.");
             }
 
             unpatches.push(
