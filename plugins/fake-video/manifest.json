@@ -1,0 +1,14 @@
+{
+  "name": "Fake Video",
+  "description": "Report video as enabled with /fakevideo, without starting local camera capture.",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "VideoIcon"
+  },
+  "hash": "156998c0aec450c885ed018923ddb17322aa94e9cc2be3bf80dd0b23e702bee5"
+}
