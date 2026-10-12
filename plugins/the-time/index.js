@@ -8,7 +8,17 @@
     const { useProxy } = vendetta.storage;
     const { FormSection, FormRow, FormSwitchRow, FormInput } = vendetta.ui.components.Forms;
 
-    const OFFSET_RE = /^([+-])(\d{2}):(\d{2})$/;
+    const OFFSET_RE = /^([+-])?(\d{1,2})(?::(\d{2}))?$/;
+    const BULK_URL = "https://timezonedb.catvibers.me/api/user/bulk";
+    const USER_AGENT = "Kettu-ShowMeYourTime/1.0";
+    const CACHE_MS = 60 * 60 * 1000;
+    const RETRY_MS = 5 * 60 * 1000;
+    const CHUNK_SIZE = 50;
+
+    const lookups = new Map();
+    const pending = new Set();
+    const inflight = new Set();
+    let timer = null;
 
     let cacheRaw = null;
     let cacheParsed = {};
@@ -28,10 +38,71 @@
 
     function offsetToMinutes(offset) {
         if (typeof offset !== "string") return null;
-        const match = offset.match(OFFSET_RE);
+        const match = offset.trim().match(OFFSET_RE);
         if (!match) return null;
         const [, sign, h, m] = match;
-        return (sign === "-" ? -1 : 1) * (Number(h) * 60 + Number(m));
+        return (sign === "-" ? -1 : 1) * (Number(h) * 60 + Number(m ?? 0));
+    }
+
+    function fetchChunk(ids) {
+        ids.forEach(id => inflight.add(id));
+        const done = () => ids.forEach(id => inflight.delete(id));
+
+        fetch(BULK_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            body: JSON.stringify(ids),
+        })
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+            })
+            .then(data => {
+                const expires = Date.now() + CACHE_MS;
+                for (const id of ids) {
+                    const entry = data?.[id];
+                    lookups.set(id, { minutes: entry ? offsetToMinutes(entry.timezone) : null, expires });
+                }
+                done();
+            })
+            .catch(e => {
+                const expires = Date.now() + RETRY_MS;
+                for (const id of ids) {
+                    const old = lookups.get(id);
+                    lookups.set(id, { minutes: old ? old.minutes : null, expires });
+                }
+                done();
+                console.error("ShowMeYourTime: timezone lookup failed", e);
+            });
+    }
+
+    function flush() {
+        timer = null;
+        const ids = Array.from(pending);
+        pending.clear();
+        for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+            fetchChunk(ids.slice(i, i + CHUNK_SIZE));
+        }
+    }
+
+    function queueLookup(userId) {
+        if (pending.has(userId) || inflight.has(userId)) return;
+        pending.add(userId);
+        if (!timer) timer = setTimeout(flush, 300);
+    }
+
+    function getMinutesForUser(userId) {
+        const manual = offsetToMinutes(getOffsets()[userId]);
+        if (manual !== null) return manual;
+
+        if (!storage.autoLookup) return null;
+
+        const entry = lookups.get(userId);
+        if (!entry || entry.expires < Date.now()) queueLookup(userId);
+        return entry ? entry.minutes : null;
     }
 
     function formatTime(date) {
@@ -44,7 +115,7 @@
     }
 
     function getLocalTimeForUser(userId) {
-        const minutes = offsetToMinutes(getOffsets()[userId]);
+        const minutes = getMinutesForUser(userId);
         if (minutes === null) return null;
         return formatTime(new Date(Date.now() + minutes * 60 * 1000));
     }
@@ -61,10 +132,10 @@
         }
         for (const [id, offset] of Object.entries(parsed)) {
             if (offsetToMinutes(offset) === null) {
-                return `Bad offset for ${id}: use +05:30 or -08:00`;
+                return `Bad offset for ${id}: use +5:30 or -08:00`;
             }
         }
-        return `OK (${Object.keys(parsed).length} user${Object.keys(parsed).length === 1 ? "" : "s"})`;
+        return `OK (${Object.keys(parsed).length} override${Object.keys(parsed).length === 1 ? "" : "s"})`;
     }
 
     function Settings() {
@@ -95,7 +166,20 @@
             ),
             React.createElement(
                 FormSection,
-                { title: "Timezones" },
+                { title: "Automatic lookup" },
+                React.createElement(FormSwitchRow, {
+                    label: "Look up timezones online",
+                    subLabel:
+                        "Sends the IDs of people whose messages you see to timezonedb.catvibers.me. Only people who registered there show a time. Times appear after messages re-render (scroll or reopen the channel).",
+                    value: !!storage.autoLookup,
+                    onValueChange: v => {
+                        storage.autoLookup = v;
+                    },
+                })
+            ),
+            React.createElement(
+                FormSection,
+                { title: "Manual overrides (optional)" },
                 React.createElement(FormInput, {
                     title: "Offsets (JSON)",
                     placeholder: '{"userID":"-05:00"}',
@@ -106,7 +190,7 @@
                 }),
                 React.createElement(FormRow, {
                     label: validateTimezones(storage.timezones),
-                    subLabel: "Long-press a user > Copy ID to get their ID (needs Developer Mode on).",
+                    subLabel: "Overrides beat the online lookup. Long-press a user > Copy ID (needs Developer Mode on).",
                 })
             )
         );
@@ -118,6 +202,7 @@
         onLoad() {
             storage.format ??= "12h";
             storage.showSeconds ??= false;
+            storage.autoLookup ??= true;
             storage.timezones ??= "{}";
 
             const StreamerModeStore = findByStoreName("StreamerModeStore");
@@ -144,6 +229,11 @@
         onUnload() {
             unpatch?.();
             unpatch = null;
+            if (timer) clearTimeout(timer);
+            timer = null;
+            pending.clear();
+            inflight.clear();
+            lookups.clear();
         },
 
         settings: Settings,
