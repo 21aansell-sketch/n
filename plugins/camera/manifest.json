@@ -1,0 +1,14 @@
+{
+  "name": "i am moid_67",
+  "description": "/fakecamera to toggle",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "428ef5a97119120c07337a6bb9ff72bba15bc121bef3e4b2530d67a8dee7d8f2",
+  "vendetta": {
+    "icon": "ic_video"
+  }
+}
