@@ -242,35 +242,51 @@
     return false;
   }
 
+  // Only badges with a real Discord icon hash are safe to inject: the native badge
+  // renderer builds its image address from that hash, and anything else
+  // (a URL, an empty string, an SVG) can crash the profile on launch.
+  function badgeHash(id) {
+    return HASHES[id] || HASHES[canon(id)] || null;
+  }
+
+  function canAddBadge(id) {
+    return !!KNOWN[id] && !!badgeHash(id);
+  }
+
   function buildBadge(id) {
-    var kn = KNOWN[id];
-    var urls = badgeUrls(id);
-    var hash = HASHES[id];
+    var hash = badgeHash(id);
+    if (!hash) return null;
+    var kn = KNOWN[id] || KNOWN[canon(id)];
     return {
       id: id,
-      key: id,
       description: kn ? kn.description : id.replace(/_/g, " "),
-      icon: hash || urls[0] || "",
-      userId: ownId
+      icon: hash
     };
   }
 
   function mergeBadges(list) {
-    var out = [];
-    (list || []).forEach(function (b) {
-      if (b && !isHiddenBadge(b)) out.push(b);
-    });
-    (storage.addedBadges || []).forEach(function (id) {
-      if (badgePresent(out, id)) return;
-      var g = exclusiveGroup(id);
-      if (g) {
-        for (var i = 0; i < out.length; i++) {
-          if (exclusiveGroup(out[i].id || out[i].key || "") === g) return;
+    var base = Array.isArray(list) ? list : [];
+    try {
+      var out = [];
+      base.forEach(function (b) {
+        if (b && !isHiddenBadge(b)) out.push(b);
+      });
+      (storage.addedBadges || []).forEach(function (id) {
+        if (typeof id !== "string" || !canAddBadge(id) || badgePresent(out, id)) return;
+        var g = exclusiveGroup(id);
+        if (g) {
+          for (var i = 0; i < out.length; i++) {
+            if (exclusiveGroup(out[i].id || out[i].key || "") === g) return;
+          }
         }
-      }
-      out.push(buildBadge(id));
-    });
-    return out;
+        var badge = buildBadge(id);
+        if (badge) out.push(badge);
+      });
+      return out;
+    } catch (e) {
+      console.warn("[larp-tool] mergeBadges failed", e);
+      return base;
+    }
   }
 
   function ownedBadgeEntries() {
@@ -316,7 +332,7 @@
 
   function setAddedVisible(id, visible) {
     var added = (storage.addedBadges || []).filter(function (x) { return x !== id; });
-    if (visible) {
+    if (visible && canAddBadge(id)) {
       var g = exclusiveGroup(id);
       if (g) added = added.filter(function (x) { return exclusiveGroup(x) !== g; });
       added.push(id);
@@ -630,47 +646,64 @@
       storage.hideProfileEffect || effectObj() || joinMs() != null);
   }
 
+  // Builds a plain copy of obj (same prototype, so methods and getters still work)
+  // with some properties replaced. Unlike a Proxy this can never break on frozen or
+  // non-configurable objects, which is what crashed the profile screen.
+  function cloneWith(obj, overrides) {
+    var copy = Object.create(Object.getPrototypeOf(obj));
+    Reflect.ownKeys(obj).forEach(function (k) {
+      var d = Object.getOwnPropertyDescriptor(obj, k);
+      if (!d) return;
+      d.configurable = true;
+      if ("value" in d) d.writable = true;
+      Object.defineProperty(copy, k, d);
+    });
+    Object.keys(overrides).forEach(function (k) {
+      Object.defineProperty(copy, k, { value: overrides[k], writable: true, configurable: true, enumerable: true });
+    });
+    return copy;
+  }
+
   function spoofUser(user) {
     if (!user || !storage.enabled || user.id !== getOwnId() || !hasUserSpoof()) return user;
     var c = userCache.get(user);
     if (c && c.g === gen) return c.p;
 
+    var o = {};
     var uname = (storage.customUsername || "").trim();
     var ms = joinMs();
 
-    var p = new Proxy(user, {
-      get: function (t, prop) {
-        if (prop === "username" && uname) return uname;
-        if (prop === "avatarDecorationData" || prop === "avatarDecoration") {
-          if (storage.hideAvatarDecoration) return null;
-          var d = decoObj();
-          if (d) return d;
-        }
-        if (prop === "nameplate") {
-          if (storage.hideNameplate) return null;
-          var pl = plateObj();
-          if (pl) return pl;
-        }
-        if (prop === "collectibles") {
-          if (storage.hideNameplate) {
-            var stripped = copyProps(t.collectibles);
-            delete stripped.nameplate;
-            return stripped;
-          }
-          var pl2 = plateObj();
-          if (pl2) {
-            var merged = copyProps(t.collectibles);
-            merged.nameplate = pl2;
-            return merged;
-          }
-        }
-        if (prop === "createdAt" && ms != null) return new Date(ms);
-        if (prop === "getCreatedAt" && ms != null) return function () { return new Date(ms); };
-        var v = Reflect.get(t, prop, t);
-        return typeof v === "function" ? v.bind(t) : v;
-      }
-    });
+    if (uname) o.username = uname;
 
+    if (storage.hideAvatarDecoration) {
+      o.avatarDecorationData = null;
+      o.avatarDecoration = null;
+    } else {
+      var d = decoObj();
+      if (d) { o.avatarDecorationData = d; o.avatarDecoration = d; }
+    }
+
+    if (storage.hideNameplate) {
+      o.nameplate = null;
+      var stripped = copyProps(user.collectibles);
+      delete stripped.nameplate;
+      o.collectibles = stripped;
+    } else {
+      var pl = plateObj();
+      if (pl) {
+        o.nameplate = pl;
+        var merged = copyProps(user.collectibles);
+        merged.nameplate = pl;
+        o.collectibles = merged;
+      }
+    }
+
+    if (ms != null) {
+      o.createdAt = new Date(ms);
+      o.getCreatedAt = function () { return new Date(ms); };
+    }
+
+    var p = cloneWith(user, o);
     userCache.set(user, { g: gen, p: p });
     return p;
   }
@@ -681,31 +714,27 @@
     if (c && c.g === gen) return c.p;
 
     var ms = joinMs();
-    var badges = mergeBadges(profile.badges);
-    var accounts = applyConnections(profile.connectedAccounts);
-    var effect = storage.hideProfileEffect ? null : effectObj();
+    var o = {
+      badges: mergeBadges(profile.badges),
+      connectedAccounts: applyConnections(profile.connectedAccounts)
+    };
 
-    var p = new Proxy(profile, {
-      get: function (t, prop) {
-        if (prop === "badges") return badges;
-        if (prop === "connectedAccounts") return accounts;
-        if (prop === "profileEffect") {
-          if (storage.hideProfileEffect) return null;
-          if (effect) return effect;
-        }
-        if (prop === "profileEffectId") {
-          if (storage.hideProfileEffect) return null;
-          if (effect) return effect.id;
-        }
-        if (prop === "profileEffectExpiresAt") {
-          if (storage.hideProfileEffect || effect) return null;
-        }
-        if (prop === "createdAt" && ms != null) return new Date(ms).toISOString();
-        var v = Reflect.get(t, prop, t);
-        return typeof v === "function" ? v.bind(t) : v;
+    if (storage.hideProfileEffect) {
+      o.profileEffect = null;
+      o.profileEffectId = null;
+      o.profileEffectExpiresAt = null;
+    } else {
+      var effect = effectObj();
+      if (effect) {
+        o.profileEffect = effect;
+        o.profileEffectId = effect.id;
+        o.profileEffectExpiresAt = null;
       }
-    });
+    }
 
+    if (ms != null) o.createdAt = new Date(ms).toISOString();
+
+    var p = cloneWith(profile, o);
     profileCache.set(profile, { g: gen, p: p });
     return p;
   }
@@ -834,7 +863,7 @@
 
     var spoofed = Object.keys(addedIds).filter(function (id) { return !ownedIds[canon(id)]; });
     var addable = Object.keys(KNOWN).filter(function (id) {
-      return !ownedIds[canon(id)] && !addedIds[id];
+      return canAddBadge(id) && !ownedIds[canon(id)] && !addedIds[id];
     }).sort(function (a, b) { return KNOWN[a].description.localeCompare(KNOWN[b].description); });
 
     function blocked(id) {
@@ -1127,14 +1156,20 @@
   }
 
   function installPatches() {
+    // Every callback below runs inside Discord's own rendering, so an error here
+    // would crash the app. Any failure falls back to the untouched original value.
     safe("user store", function () {
-      unpatches.push(patcher.after("getCurrentUser", UserStore, function (args, res) { return spoofUser(res); }));
-      unpatches.push(patcher.after("getUser", UserStore, function (args, res) { return spoofUser(res); }));
+      unpatches.push(patcher.after("getCurrentUser", UserStore, function (args, res) {
+        try { return spoofUser(res); } catch (e) { return res; }
+      }));
+      unpatches.push(patcher.after("getUser", UserStore, function (args, res) {
+        try { return spoofUser(res); } catch (e) { return res; }
+      }));
     });
 
     safe("profile store", function () {
       unpatches.push(patcher.after("getUserProfile", UserProfileStore, function (args, res) {
-        return spoofProfile(res, args[0]);
+        try { return spoofProfile(res, args[0]); } catch (e) { return res; }
       }));
     });
 
@@ -1143,20 +1178,12 @@
       var mod = metro.findByName("useBadges", false);
       if (!mod) return;
       unpatches.push(patcher.after("default", mod, function (args, res) {
-        var u = args[0];
-        var id = u && (u.userId || u.id);
-        if (!storage.enabled || !id || id !== getOwnId() || !Array.isArray(res)) return res;
-        return mergeBadges(res);
-      }));
-    });
-
-    // Our added badges may carry a full URL instead of a Discord icon hash
-    safe("getBadgeAsset", function () {
-      var mod = metro.findByProps("getBadgeAsset");
-      if (!mod) return;
-      unpatches.push(patcher.after("getBadgeAsset", mod, function (args, res) {
-        if (typeof args[0] === "string" && args[0].indexOf("http") === 0) return { uri: args[0] };
-        return res;
+        try {
+          var u = args[0];
+          var id = u && (u.userId || u.id);
+          if (!storage.enabled || !id || id !== getOwnId() || !Array.isArray(res)) return res;
+          return mergeBadges(res);
+        } catch (e) { return res; }
       }));
     });
 
@@ -1225,7 +1252,7 @@
     var map = {};
     ownedBadgeEntries().forEach(function (b) { map[b.id] = { id: b.id, description: b.description, owned: true }; });
     Object.keys(KNOWN).forEach(function (id) {
-      if (!map[id] && !map[canon(id)]) map[id] = { id: id, description: KNOWN[id].description, owned: false };
+      if (canAddBadge(id) && !map[id] && !map[canon(id)]) map[id] = { id: id, description: KNOWN[id].description, owned: false };
     });
     return Object.keys(map).map(function (k) { return map[k]; });
   }
@@ -1510,6 +1537,25 @@
     onLoad: function () {
       // Must never throw: Vendetta turns the plugin off again if onLoad fails.
       safe("storage", initStorage);
+
+      // Crash-loop guard. The counter is cleared 10s after a launch that survived.
+      // If it is still set on the next launch, the last one died early.
+      safe("crash guard", function () {
+        var strikes = Number(storage.bootStrikes) || 0;
+        // drop anything saved by older versions that can't be rendered safely
+        storage.addedBadges = (storage.addedBadges || []).filter(canAddBadge);
+        if (strikes >= 2) {
+          storage.enabled = false;
+          storage.addedBadges = [];
+          toast("Larp Tool turned itself off after repeated crashes. Use /larp-toggle on to re-enable.");
+        } else if (strikes >= 1) {
+          storage.addedBadges = [];
+          toast("Larp Tool cleared your added badges after a crash.");
+        }
+        storage.bootStrikes = strikes + 1;
+        setTimeout(function () { try { storage.bootStrikes = 0; } catch (e) {} }, 10000);
+      });
+
       safe("commands", registerCommands);
       safe("user stores", function () {
         origGetCurrentUser = UserStore.getCurrentUser.bind(UserStore);
@@ -1520,6 +1566,7 @@
       safe("refresh", refresh);
     },
     onUnload: function () {
+      try { storage.bootStrikes = 0; } catch (e) {}
       unpatches.splice(0).forEach(function (fn) { try { fn(); } catch (e) {} });
       gen++;
       refresh();
