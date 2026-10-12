@@ -10,16 +10,49 @@
   var RN = vd.metro.common.ReactNative;
   var FluxDispatcher = vd.metro.common.FluxDispatcher;
   var h = React.createElement;
-  var Forms = vd.ui.components.Forms;
   var storage = vd.plugin.storage;
   var useProxy = vd.storage.useProxy;
   var patcher = vd.patcher;
   var metro = vd.metro;
-  var toast = vd.ui.toasts.showToast;
 
-  var UserStore = metro.findByStoreName("UserStore");
-  var UserProfileStore = metro.findByStoreName("UserProfileStore");
-  var RestAPI = metro.findByProps("getAPIBaseURL", "get");
+  // Anything evaluated at the top level must never throw, or the plugin can't start at all
+  function tryFind(fn) {
+    try { return fn(); } catch (e) { return undefined; }
+  }
+
+  var toast = function (m) {
+    try { vd.ui.toasts.showToast(m); } catch (e) {}
+  };
+
+  var Forms = tryFind(function () { return vd.ui.components.Forms; }) ||
+    tryFind(function () { return metro.findByProps("FormSection", "FormRow", "FormSwitch"); }) || {};
+  ["FormSection", "FormRow", "FormSwitch", "FormInput", "FormText"].forEach(function (k) {
+    if (!Forms[k]) {
+      Forms[k] = function (p) {
+        return h(RN.View, null,
+          p && p.label ? h(RN.Text, { style: { color: "#fff", padding: 8 } }, String(p.label)) : null,
+          p && p.children);
+      };
+    }
+  });
+
+  var UserStore = tryFind(function () { return metro.findByStoreName("UserStore"); }) ||
+    tryFind(function () { return metro.findByProps("getCurrentUser", "getUser"); });
+  var UserProfileStore = tryFind(function () { return metro.findByStoreName("UserProfileStore"); }) ||
+    tryFind(function () { return metro.findByProps("getUserProfile"); });
+  var AuthStore = tryFind(function () { return metro.findByStoreName("AuthenticationStore"); });
+  var restCache = null;
+  function getRest() {
+    if (restCache) return restCache;
+    var tries = [["getAPIBaseURL", "get"], ["get", "post", "put", "patch", "getAPIBaseURL"], ["getAPIBaseURL"]];
+    for (var i = 0; i < tries.length; i++) {
+      try {
+        var m = metro.findByProps.apply(metro, tries[i]);
+        if (m && typeof m.get === "function") { restCache = m; return m; }
+      } catch (e) {}
+    }
+    return null;
+  }
 
   var unpatches = [];
   var origGetCurrentUser = null;
@@ -488,7 +521,9 @@
 
     var out = { avatar: [], effect: [], plate: [], t: Date.now() };
     function tryUrl(url) {
-      return RestAPI.get({ url: url, query: { variants_return_style: 1 } }).then(function (res) {
+      var rest = getRest();
+      if (!rest) return Promise.reject(new Error("REST module not found"));
+      return rest.get({ url: url, query: { variants_return_style: 1 } }).then(function (res) {
         var cats = (res && res.body && res.body.categories) || [];
         cats.forEach(function (c) {
           (c.products || []).forEach(function (p) { collect(p, out); });
@@ -567,8 +602,9 @@
 
   function getOwnId() {
     if (ownId) return ownId;
-    var u = origGetCurrentUser ? origGetCurrentUser() : null;
+    var u = origGetCurrentUser ? tryFind(origGetCurrentUser) : null;
     if (u && u.id) ownId = u.id;
+    if (!ownId && AuthStore && AuthStore.getId) ownId = tryFind(function () { return AuthStore.getId(); }) || "";
     return ownId;
   }
 
@@ -582,8 +618,20 @@
   var userCache = new WeakMap();
   var profileCache = new WeakMap();
 
+  function hasUserSpoof() {
+    return !!((storage.customUsername || "").trim() || joinMs() != null ||
+      storage.hideAvatarDecoration || storage.hideNameplate || decoObj() || plateObj());
+  }
+
+  function hasProfileSpoof() {
+    return !!((storage.addedBadges || []).length || (storage.hiddenBadges || []).length ||
+      (storage.hiddenConnections || []).length || (storage.customConnections || []).length ||
+      Object.keys(storage.connectionOverrides || {}).length ||
+      storage.hideProfileEffect || effectObj() || joinMs() != null);
+  }
+
   function spoofUser(user) {
-    if (!user || !storage.enabled || user.id !== getOwnId()) return user;
+    if (!user || !storage.enabled || user.id !== getOwnId() || !hasUserSpoof()) return user;
     var c = userCache.get(user);
     if (c && c.g === gen) return c.p;
 
@@ -628,7 +676,7 @@
   }
 
   function spoofProfile(profile, userId) {
-    if (!profile || !storage.enabled || userId !== getOwnId()) return profile;
+    if (!profile || !storage.enabled || userId !== getOwnId() || !hasProfileSpoof()) return profile;
     var c = profileCache.get(profile);
     if (c && c.g === gen) return c.p;
 
@@ -670,8 +718,8 @@
     refreshTimer = setTimeout(function () {
       refreshTimer = null;
       var emitted = false;
-      try { if (UserStore.emitChange) { UserStore.emitChange(); emitted = true; } } catch (e) {}
-      try { if (UserProfileStore.emitChange) { UserProfileStore.emitChange(); emitted = true; } } catch (e) {}
+      try { if (UserStore && UserStore.emitChange) { UserStore.emitChange(); emitted = true; } } catch (e) {}
+      try { if (UserProfileStore && UserProfileStore.emitChange) { UserProfileStore.emitChange(); emitted = true; } } catch (e) {}
       if (!emitted && origGetCurrentUser) {
         try { FluxDispatcher.dispatch({ type: "USER_UPDATE", user: origGetCurrentUser() }); } catch (e) {}
       }
@@ -1072,7 +1120,10 @@
   // ----------------------------------------------------------------- patches
 
   function safe(label, fn) {
-    try { fn(); } catch (e) { console.warn("[larp-tool] " + label + " failed", e); }
+    try { fn(); } catch (e) {
+      console.warn("[larp-tool] " + label + " failed", e);
+      try { toast("Larp Tool: " + label + " failed - " + ((e && e.message) || e)); } catch (e2) {}
+    }
   }
 
   function installPatches() {
@@ -1457,14 +1508,16 @@
 
   return {
     onLoad: function () {
-      initStorage();
+      // Must never throw: Vendetta turns the plugin off again if onLoad fails.
+      safe("storage", initStorage);
       safe("commands", registerCommands);
-      origGetCurrentUser = UserStore.getCurrentUser.bind(UserStore);
-      origGetUserProfile = UserProfileStore.getUserProfile.bind(UserProfileStore);
-      getOwnId();
-      installPatches();
-      refresh();
-      fetchShop().catch(function () {});
+      safe("user stores", function () {
+        origGetCurrentUser = UserStore.getCurrentUser.bind(UserStore);
+        origGetUserProfile = UserProfileStore.getUserProfile.bind(UserProfileStore);
+        getOwnId();
+      });
+      safe("patches", installPatches);
+      safe("refresh", refresh);
     },
     onUnload: function () {
       unpatches.splice(0).forEach(function (fn) { try { fn(); } catch (e) {} });
