@@ -15,7 +15,6 @@ plugins that dont work.
 - mic
 - delete (delete2 works)
 - veiwer (prem works does same thing better)
-- larp
 - timezones thing 
 - cuck plugin
 
