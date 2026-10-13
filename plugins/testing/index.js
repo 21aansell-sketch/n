@@ -1,161 +1,118 @@
 (() => {
     const { findByProps, findByStoreName } = vendetta.metro;
-    const { FluxDispatcher: CommonDispatcher } = vendetta.metro.common;
+    const { FluxDispatcher } = vendetta.metro.common;
     const { registerCommand } = vendetta.commands;
     const { showToast } = vendetta.ui.toasts;
-    const { before } = vendetta.patcher;
     const { storage } = vendetta.plugin;
     const log = vendetta.logger;
 
     const STRING = 3; // ApplicationCommandOptionType.STRING
-    const ON_WORDS = ["on", "true", "yes", "1", "enable"];
-    const OFF_WORDS = ["off", "false", "no", "0", "disable"];
+    const MAX_DB = 60; // beyond this speech is already hard-clipped, so more changes nothing
+    const OFF_WORDS = ["off", "reset", "none", "default", "clear", "0"];
 
-    let UserStore, MediaEngineStore;
+    let MediaEngineStore, SelectedChannelStore, Actions;
     let timer;
-    let rtcConn = null; // the JS voice connection for the current call
-    let rtcUndo = [];
-    const unpatches = [];
+    let lastChannel = null;
     const unregisters = [];
-    const logged = new Map();
 
-    const myId = () => UserStore?.getCurrentUser?.()?.id;
+    // Discord's input volume is a percentage where 100 is unchanged, so +20 dB = 1000%.
+    const dbToPercent = db => 100 * Math.pow(10, db / 20);
+    const engine = () => MediaEngineStore?.getMediaEngine?.() ?? null;
+    const currentVolume = () => {
+        try { return MediaEngineStore?.getInputVolume?.(); } catch (_) { return undefined; }
+    };
 
-    // Logs a method's arguments its first few times it is called, so the real
-    // signatures show up in the Kettu logs.
-    function logOnce(name, args) {
-        const n = logged.get(name) ?? 0;
-        if (n >= 3) return;
-        logged.set(name, n + 1);
+    // Tries the ways Discord sets the microphone input volume, and says which one it used.
+    function writeVolume(percent) {
         try {
-            log.log(`Hide Speaking: ${name} called with`, JSON.stringify(args).slice(0, 300));
-        } catch (_) {
-            log.log(`Hide Speaking: ${name} called (args not printable)`);
-        }
-    }
-
-    // YOUR SCREEN. Discord reports who is talking with a "SPEAKING" action that carries
-    // the user and a flag. Zeroing it for your own user stops the ring on your side.
-    function onDispatch([action]) {
-        if (!storage.hide || action?.type !== "SPEAKING" || !action.speakingFlags) return;
-        const me = myId();
-        if (me && action.userId === me) action.speakingFlags = 0;
-    }
-
-    // OTHER PEOPLE (experimental). The JS voice connection's sendSpeaking tells the voice
-    // server you're talking. Testing showed that sending 0 hides your ring but also stops
-    // other people hearing you, so the default is 1 (unchanged). /speakingvalue lets you try
-    // other values (2 = soundshare, 4 = priority). A "stopped speaking" 0 is never changed.
-    function rewriteSpeaking(args) {
-        const value = Number.isInteger(storage.value) ? storage.value : 1;
-        if (value === 1) return;
-        const first = args[0];
-        if (typeof first === "number") {
-            if (first !== 0) args[0] = value;
-        } else if (typeof first === "boolean") {
-            if (first && value === 0) args[0] = false;
-        } else if (first && typeof first === "object" && "speaking" in first) {
-            if (first.speaking) first.speaking = value;
-        }
-    }
-
-    function patchRtc(rtc) {
-        const undo = [];
-        if (typeof rtc.sendSpeaking === "function") {
-            undo.push(before("sendSpeaking", rtc, args => {
-                logOnce("sendSpeaking", args);
-                rewriteSpeaking(args);
-            }));
-        }
-        rtcConn = rtc;
-        rtcUndo = undo;
-        log.log(`Hide Speaking: patched the RTC connection (sendSpeaking ${typeof rtc.sendSpeaking})`);
-    }
-
-    function currentRtc() {
-        const store = findByStoreName("RTCConnectionStore");
-        const channelId = findByStoreName("SelectedChannelStore")?.getVoiceChannelId?.();
-        let rtc = null;
-        try { rtc = store?.getRTCConnection?.(channelId); } catch (_) { /* try without an id */ }
-        if (!rtc) {
-            try { rtc = store?.getRTCConnection?.(); } catch (_) { /* not in a call */ }
-        }
-        return rtc && typeof rtc === "object" ? rtc : null;
-    }
-
-    // The voice connection only exists while you're in a call, so keep checking for a new one.
-    function scan() {
-        try {
-            const rtc = currentRtc();
-            if (rtc === rtcConn) return;
-            rtcUndo.forEach(u => u());
-            rtcUndo = [];
-            rtcConn = null;
-            if (rtc) patchRtc(rtc);
-        } catch (e) {
-            log.error("Hide Speaking: scan failed", e);
-        }
-    }
-
-    function hideCommand() {
-        const description = "Hide your speaking ring on your own screen. Optionally pass on or off";
-        return {
-            name: "hidespeaking",
-            displayName: "hidespeaking",
-            description,
-            displayDescription: description,
-            options: [{
-                name: "state",
-                displayName: "state",
-                description: "on or off (leave empty to toggle)",
-                displayDescription: "on or off (leave empty to toggle)",
-                type: STRING,
-                required: false
-            }],
-            execute(args) {
-                const raw = args?.find(a => a?.name === "state")?.value;
-                const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-
-                if (!value) storage.hide = !storage.hide;
-                else if (ON_WORDS.includes(value)) storage.hide = true;
-                else if (OFF_WORDS.includes(value)) storage.hide = false;
-                else return void showToast("Use /hidespeaking on, /hidespeaking off, or just /hidespeaking to toggle");
-
-                showToast(storage.hide ? "Speaking ring hidden on your screen" : "Speaking ring shown again on your screen");
+            if (typeof Actions?.setInputVolume === "function") {
+                Actions.setInputVolume(percent);
+                return "MediaEngineActions.setInputVolume";
             }
-        };
+        } catch (e) {
+            log.error("Mic Boost: setInputVolume action failed", e);
+        }
+        try {
+            const e = engine();
+            if (typeof e?.setInputVolume === "function") {
+                e.setInputVolume(percent);
+                return "engine.setInputVolume";
+            }
+        } catch (e) {
+            log.error("Mic Boost: engine.setInputVolume failed", e);
+        }
+        try {
+            if (FluxDispatcher?.dispatch) {
+                FluxDispatcher.dispatch({ type: "AUDIO_SET_INPUT_VOLUME", volume: percent });
+                return "AUDIO_SET_INPUT_VOLUME action (guess)";
+            }
+        } catch (e) {
+            log.error("Mic Boost: dispatch failed", e);
+        }
+        return null;
     }
 
-    function valueCommand() {
-        const description = "Experimental: what other people see when you talk. 1 is normal, 0 hides it but cuts your audio";
+    function applyBoost() {
+        if (!(storage.db > 0)) return null;
+        return writeVolume(dbToPercent(storage.db));
+    }
+
+    function restoreVolume() {
+        const original = typeof storage.original === "number" ? storage.original : 100;
+        return writeVolume(original);
+    }
+
+    function boostCommand() {
+        const description = `Boost your microphone volume by this many dB (0 to ${MAX_DB}), or off to reset`;
         return {
-            name: "speakingvalue",
-            displayName: "speakingvalue",
+            name: "micboost",
+            displayName: "micboost",
             description,
             displayDescription: description,
             options: [{
-                name: "value",
-                displayName: "value",
-                description: "0 to 7, or reset",
-                displayDescription: "0 to 7, or reset",
+                name: "db",
+                displayName: "db",
+                description: `Number of dB (0 to ${MAX_DB}), or off`,
+                displayDescription: `Number of dB (0 to ${MAX_DB}), or off`,
                 type: STRING,
                 required: true
             }],
             execute(args) {
-                const raw = args?.find(a => a?.name === "value")?.value;
-                const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+                const raw = args?.find(a => a?.name === "db")?.value;
+                const value = typeof raw === "string" ? raw.trim().toLowerCase().replace(/db$/, "").trim() : "";
 
-                if (value === "reset") storage.value = 1;
-                else if (/^[0-7]$/.test(value)) storage.value = Number(value);
-                else return void showToast("Use /speakingvalue 2, /speakingvalue 4, or /speakingvalue reset");
+                if (OFF_WORDS.includes(value)) {
+                    const used = restoreVolume();
+                    delete storage.db;
+                    delete storage.original;
+                    return void showToast(used ? "Mic boost off, input volume restored" : "Mic boost off. Couldn't reach the input volume, check /micdebug");
+                }
 
-                scan();
-                showToast(
-                    storage.value === 1
-                        ? "Other people see your ring normally"
-                        : `Sending speaking value ${storage.value} to others. Applies the next time you talk` +
-                          (rtcConn ? "" : ". Not in a call yet")
-                );
+                const parsed = parseFloat(value);
+                if (!Number.isFinite(parsed) || parsed < 0) {
+                    return void showToast(`Use /micboost <dB from 0 to ${MAX_DB}>, or /micboost off`);
+                }
+                const db = Math.min(parsed, MAX_DB);
+
+                // Remember the normal volume the first time, so turning the boost off puts it back.
+                if (typeof storage.original !== "number") {
+                    const now = currentVolume();
+                    storage.original = typeof now === "number" ? now : 100;
+                }
+                storage.db = db;
+
+                const percent = dbToPercent(db);
+                const used = applyBoost();
+                if (!used) return void showToast("Couldn't find a way to set the input volume. Run /micdebug and check the Kettu logs");
+
+                showToast(`Mic boost ${db} dB (${Math.round(percent)}%)` + (parsed > MAX_DB ? `, capped at ${MAX_DB}` : ""));
+                // Read it back, because Discord may have limited it to a lower value.
+                setTimeout(() => {
+                    const now = currentVolume();
+                    if (typeof now === "number" && Math.abs(now - percent) > 1) {
+                        showToast(`Discord kept the input volume at ${Math.round(now)}%`);
+                    }
+                }, 400);
             }
         };
     }
@@ -170,56 +127,58 @@
         }).sort();
     }
 
-    // Writes the JS voice connection's function names to the Kettu logs.
-    function debugRtc() {
-        const out = {};
-        try {
-            const rtc = currentRtc();
-            if (rtc) {
-                out.connection = methodsOf(rtc);
-                out.connectionKeys = Object.keys(rtc);
+    // Writes the volume-related functions Discord exposes to the Kettu logs.
+    function debugCommand() {
+        const description = "Log the microphone volume functions to the Kettu logs";
+        return {
+            name: "micdebug",
+            displayName: "micdebug",
+            description,
+            displayDescription: description,
+            options: [],
+            execute() {
+                const out = { inputVolume: currentVolume(), savedOriginal: storage.original, boostDb: storage.db };
+                try {
+                    const interesting = /volume|gain|input|agc|automatic/i;
+                    const pick = obj => (obj ? methodsOf(obj).filter(n => interesting.test(n)) : null);
+                    const e = engine();
+                    out.store = pick(MediaEngineStore);
+                    out.actions = pick(Actions);
+                    out.engine = pick(e);
+                    out.engineAll = e ? methodsOf(e) : null;
+                } catch (e) {
+                    out.error = String(e);
+                }
+                log.log("Mic Boost: debug", JSON.stringify(out));
+                showToast("Details are in the Kettu logs");
             }
-            out.patched = !!rtcConn;
-        } catch (e) {
-            out.error = String(e);
-        }
-        log.log("Hide Speaking: rtc debug", JSON.stringify(out));
-        showToast(out.connection
-            ? "Found the RTC connection, details are in the Kettu logs"
-            : "No RTC connection found, details are in the Kettu logs");
+        };
     }
 
     return {
         onLoad() {
-            UserStore = findByStoreName("UserStore");
             MediaEngineStore = findByStoreName("MediaEngineStore");
-            if (storage.hide === undefined) storage.hide = true;
+            SelectedChannelStore = findByStoreName("SelectedChannelStore");
+            Actions = findByProps("setInputVolume");
 
-            const dispatcher = CommonDispatcher ?? findByProps("dispatch", "subscribe");
-            if (dispatcher?.dispatch) {
-                unpatches.push(before("dispatch", dispatcher, onDispatch));
-            } else {
-                log.error("Hide Speaking: couldn't find the Flux dispatcher");
-            }
+            applyBoost();
+            lastChannel = SelectedChannelStore?.getVoiceChannelId?.() ?? null;
+            // Joining a call can reset the input volume, so apply the boost again when the call changes.
+            timer = setInterval(() => {
+                const id = SelectedChannelStore?.getVoiceChannelId?.() ?? null;
+                if (id === lastChannel) return;
+                lastChannel = id;
+                if (id) setTimeout(applyBoost, 500);
+            }, 3000);
 
-            scan();
-            timer = setInterval(scan, 2000);
-
-            unregisters.push(registerCommand(hideCommand()));
-            unregisters.push(registerCommand(valueCommand()));
-            const text = "Log the voice RTC connection's functions to the Kettu logs";
-            unregisters.push(registerCommand({
-                name: "rtcdebug", displayName: "rtcdebug", description: text, displayDescription: text,
-                options: [], execute: debugRtc
-            }));
+            unregisters.push(registerCommand(boostCommand()));
+            unregisters.push(registerCommand(debugCommand()));
         },
         onUnload() {
             clearInterval(timer);
-            rtcUndo.forEach(u => u());
-            rtcUndo = [];
-            rtcConn = null;
             unregisters.splice(0).forEach(u => u?.());
-            unpatches.splice(0).forEach(u => u());
+            // Put the normal volume back; the saved boost comes back when the plugin is turned on again.
+            if (storage.db > 0) restoreVolume();
         }
     };
 })()
