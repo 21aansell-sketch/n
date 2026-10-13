@@ -18,3 +18,10 @@ plugins that dont work.
 - larp
 - timezones thing 
 - cuck plugin
+
+
+the high quality ones
+- delete2
+- prem
+- larp
+- fake deafen and mute 
