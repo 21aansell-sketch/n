@@ -17,15 +17,16 @@
     const unpatches = [];
     const unregisters = [];
     const connPatches = new Map(); // voice connection -> its unpatch functions
-    const logged = new Set();
+    const logged = new Map();
 
     const myId = () => UserStore?.getCurrentUser?.()?.id;
 
-    // Logs the arguments of a method the first time it is called, so the real
+    // Logs the arguments of a method its first few times it is called, so the real
     // signatures show up in the Kettu logs.
     function logOnce(name, args) {
-        if (logged.has(name)) return;
-        logged.add(name);
+        const n = logged.get(name) ?? 0;
+        if (n >= 3) return;
+        logged.set(name, n + 1);
         try {
             log.log(`Hide Speaking: ${name} called with`, JSON.stringify(args).slice(0, 300));
         } catch (_) {
@@ -68,6 +69,12 @@
         });
         hook("handleSpeakingNative", args => logOnce("handleSpeakingNative", args));
         hook("handleSpeakingFlags", args => logOnce("handleSpeakingFlags", args));
+        hook("handleSpeakingWhileMuted", args => logOnce("handleSpeakingWhileMuted", args));
+        hook("setInputMode", args => logOnce("setInputMode", args));
+        hook("setSilenceThreshold", args => logOnce("setSilenceThreshold", args));
+        hook("emit", args => {
+            if (typeof args[0] === "string" && /speak/i.test(args[0])) logOnce(`emit ${args[0]}`, args);
+        });
         connPatches.set(conn, undo);
         log.log("Hide Speaking: patched a voice connection");
         if (storage.hide) setFlags(conn, 0);
@@ -143,6 +150,48 @@
         }
     }
 
+    function methodsOf(obj) {
+        const names = new Set(Object.keys(obj));
+        for (let p = Object.getPrototypeOf(obj); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+            Object.getOwnPropertyNames(p).forEach(n => names.add(n));
+        }
+        return [...names].filter(n => {
+            try { return typeof obj[n] === "function"; } catch (_) { return false; }
+        }).sort();
+    }
+
+    // Looks for the JS side of the voice connection, which may be what sends your speaking state.
+    function debugRtc() {
+        const out = {};
+        try {
+            const channelId = findByStoreName("SelectedChannelStore")?.getVoiceChannelId?.();
+            const store = findByStoreName("RTCConnectionStore");
+            out.store = store ? methodsOf(store) : null;
+            const tries = [
+                () => store?.getRTCConnection?.(channelId),
+                () => store?.getRTCConnection?.(),
+                () => store?.getConnection?.(channelId)
+            ];
+            for (const t of tries) {
+                let c;
+                try { c = t(); } catch (_) { /* try the next one */ }
+                if (c && typeof c === "object") {
+                    out.connection = methodsOf(c);
+                    out.connectionKeys = Object.keys(c);
+                    break;
+                }
+            }
+            const conn = [...(MediaEngineStore?.getMediaEngine?.()?.connections ?? [])][0];
+            if (conn) out.mediaConnectionKeys = Object.keys(conn);
+        } catch (e) {
+            out.error = String(e);
+        }
+        log.log("Hide Speaking: rtc debug", JSON.stringify(out));
+        showToast(out.connection
+            ? "Found the RTC connection, details are in the Kettu logs"
+            : "No RTC connection found, details are in the Kettu logs");
+    }
+
     return {
         onLoad() {
             UserStore = findByStoreName("UserStore");
@@ -158,6 +207,15 @@
 
             scan();
             timer = setInterval(scan, 2000);
+
+            unregisters.push(registerCommand({
+                name: "rtcdebug",
+                displayName: "rtcdebug",
+                description: "Log the voice RTC connection's functions to the Kettu logs",
+                displayDescription: "Log the voice RTC connection's functions to the Kettu logs",
+                options: [],
+                execute: debugRtc
+            }));
 
             unregisters.push(registerCommand(makeCommand()));
             unregisters.push(registerCommand({
