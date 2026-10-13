@@ -14,6 +14,8 @@
 
     let UserStore, MediaEngineStore;
     let timer;
+    let rtcConn = null; // the JS voice connection for the current call
+    let rtcUndo = [];
     const unpatches = [];
     const unregisters = [];
     const connPatches = new Map(); // voice connection -> its unpatch functions
@@ -80,9 +82,53 @@
         if (storage.hide) setFlags(conn, 0);
     }
 
+    // The JS voice connection is what actually sends your "speaking" state to the voice
+    // server (its sendSpeaking function). Forcing that to 0 stops the ring for other people,
+    // while your audio and its SSRC are still announced the normal way.
+    function zeroSpeaking(args) {
+        const first = args[0];
+        if (typeof first === "number") args[0] = 0;
+        else if (typeof first === "boolean") args[0] = false;
+        else if (first && typeof first === "object" && "speaking" in first) first.speaking = 0;
+    }
+
+    function patchRtc(rtc) {
+        const undo = [];
+        const hook = (name, fn) => {
+            if (typeof rtc[name] === "function") undo.push(before(name, rtc, fn));
+        };
+        hook("sendSpeaking", args => {
+            logOnce("sendSpeaking", args);
+            if (storage.hide) zeroSpeaking(args);
+        });
+        hook("shouldSendSpeaking", args => logOnce("shouldSendSpeaking", args));
+        rtcConn = rtc;
+        rtcUndo = undo;
+        log.log(`Hide Speaking: patched the RTC connection (sendSpeaking ${typeof rtc.sendSpeaking})`);
+    }
+
+    function currentRtc() {
+        const store = findByStoreName("RTCConnectionStore");
+        const channelId = findByStoreName("SelectedChannelStore")?.getVoiceChannelId?.();
+        let rtc = null;
+        try { rtc = store?.getRTCConnection?.(channelId); } catch (_) { /* try without an id */ }
+        if (!rtc) {
+            try { rtc = store?.getRTCConnection?.(); } catch (_) { /* not in a call */ }
+        }
+        return rtc && typeof rtc === "object" ? rtc : null;
+    }
+
     // Voice connections only exist while you're in a call, so keep checking for new ones.
     function scan() {
         try {
+            const rtc = currentRtc();
+            if (rtc !== rtcConn) {
+                rtcUndo.forEach(u => u());
+                rtcUndo = [];
+                rtcConn = null;
+                if (rtc) patchRtc(rtc);
+            }
+
             const conns = MediaEngineStore?.getMediaEngine?.()?.connections;
             if (conns) for (const c of conns) patchConnection(c);
             for (const [c, undo] of connPatches) {
@@ -229,6 +275,9 @@
         },
         onUnload() {
             clearInterval(timer);
+            rtcUndo.forEach(u => u());
+            rtcUndo = [];
+            rtcConn = null;
             unregisters.splice(0).forEach(u => u?.());
             unpatches.splice(0).forEach(u => u());
             for (const [conn, undo] of connPatches) {
