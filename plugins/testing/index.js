@@ -42,18 +42,20 @@
         if (me && action.userId === me) action.speakingFlags = 0;
     }
 
-    // EVERYONE ELSE. The JS voice connection's sendSpeaking tells the voice server you're
-    // talking, which is what lights up your ring for other people. Only the "speaking"
-    // notification is changed. The audio engine and its own flags are left alone, so your
-    // voice is still sent. A value of 0 ("stopped") is passed through unchanged.
+    // OTHER PEOPLE (experimental). The JS voice connection's sendSpeaking tells the voice
+    // server you're talking. Testing showed that sending 0 hides your ring but also stops
+    // other people hearing you, so the default is 1 (unchanged). /speakingvalue lets you try
+    // other values (2 = soundshare, 4 = priority). A "stopped speaking" 0 is never changed.
     function rewriteSpeaking(args) {
+        const value = Number.isInteger(storage.value) ? storage.value : 1;
+        if (value === 1) return;
         const first = args[0];
         if (typeof first === "number") {
-            if (first !== 0) args[0] = 0;
+            if (first !== 0) args[0] = value;
         } else if (typeof first === "boolean") {
-            if (first) args[0] = false;
+            if (first && value === 0) args[0] = false;
         } else if (first && typeof first === "object" && "speaking" in first) {
-            if (first.speaking) first.speaking = 0;
+            if (first.speaking) first.speaking = value;
         }
     }
 
@@ -62,7 +64,7 @@
         if (typeof rtc.sendSpeaking === "function") {
             undo.push(before("sendSpeaking", rtc, args => {
                 logOnce("sendSpeaking", args);
-                if (storage.hide) rewriteSpeaking(args);
+                rewriteSpeaking(args);
             }));
         }
         rtcConn = rtc;
@@ -96,7 +98,7 @@
     }
 
     function hideCommand() {
-        const description = "Hide your speaking ring from everyone. Optionally pass on or off";
+        const description = "Hide your speaking ring on your own screen. Optionally pass on or off";
         return {
             name: "hidespeaking",
             displayName: "hidespeaking",
@@ -119,12 +121,40 @@
                 else if (OFF_WORDS.includes(value)) storage.hide = false;
                 else return void showToast("Use /hidespeaking on, /hidespeaking off, or just /hidespeaking to toggle");
 
+                showToast(storage.hide ? "Speaking ring hidden on your screen" : "Speaking ring shown again on your screen");
+            }
+        };
+    }
+
+    function valueCommand() {
+        const description = "Experimental: what other people see when you talk. 1 is normal, 0 hides it but cuts your audio";
+        return {
+            name: "speakingvalue",
+            displayName: "speakingvalue",
+            description,
+            displayDescription: description,
+            options: [{
+                name: "value",
+                displayName: "value",
+                description: "0 to 7, or reset",
+                displayDescription: "0 to 7, or reset",
+                type: STRING,
+                required: true
+            }],
+            execute(args) {
+                const raw = args?.find(a => a?.name === "value")?.value;
+                const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+
+                if (value === "reset") storage.value = 1;
+                else if (/^[0-7]$/.test(value)) storage.value = Number(value);
+                else return void showToast("Use /speakingvalue 2, /speakingvalue 4, or /speakingvalue reset");
+
                 scan();
                 showToast(
-                    storage.hide
-                        ? "Speaking ring hidden for you and everyone else" +
-                          (rtcConn ? ". Applies the next time you talk" : ". Not in a call, applies when you join one")
-                        : "Speaking ring shown again"
+                    storage.value === 1
+                        ? "Other people see your ring normally"
+                        : `Sending speaking value ${storage.value} to others. Applies the next time you talk` +
+                          (rtcConn ? "" : ". Not in a call yet")
                 );
             }
         };
@@ -176,6 +206,7 @@
             timer = setInterval(scan, 2000);
 
             unregisters.push(registerCommand(hideCommand()));
+            unregisters.push(registerCommand(valueCommand()));
             const text = "Log the voice RTC connection's functions to the Kettu logs";
             unregisters.push(registerCommand({
                 name: "rtcdebug", displayName: "rtcdebug", description: text, displayDescription: text,
