@@ -1,0 +1,14 @@
+{
+  "name": "cuck plugin",
+  "description": "do /hidespeaking",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "vendetta": {
+    "icon": "EyeSlashIcon"
+  },
+  "hash": "7dd0dd254041963f0498ca0f01fbde1fb1cc2bba57a8e8763b621a357b859c1d"
+}
