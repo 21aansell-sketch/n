@@ -1,6 +1,6 @@
 {
   "name": "testing smth",
-  "description": "ok",
+  "description": "/hidespeaking",
   "authors": [
     {
       "name": "21aansell-sketch"
@@ -10,5 +10,5 @@
   "vendetta": {
     "icon": "EyeSlashIcon"
   },
-  "hash": "829d8e81a47ff5a91b8d42f8634abf0ce99a1724337985a13a2cce0e3b98869b"
+  "hash": "3b3da79f314fd16bff5c1ce99a448fab96e1e858029acce115a24415ea14227f"
 }
