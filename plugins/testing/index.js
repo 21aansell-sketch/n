@@ -1,18 +1,16 @@
 (() => {
     const { findByProps, findByStoreName } = vendetta.metro;
-    const { FluxDispatcher } = vendetta.metro.common;
     const { registerCommand } = vendetta.commands;
     const { showToast } = vendetta.ui.toasts;
     const { storage } = vendetta.plugin;
     const log = vendetta.logger;
 
     const STRING = 3; // ApplicationCommandOptionType.STRING
-    const MAX_DB = 60; // beyond this speech is already hard-clipped, so more changes nothing
+    const MAX_DB = 30; // speech is already hard-clipped well before this, so more only adds distortion
     const OFF_WORDS = ["off", "reset", "none", "default", "clear", "0"];
 
     let MediaEngineStore, SelectedChannelStore, Actions;
     let timer;
-    let lastChannel = null;
     const unregisters = [];
 
     // Discord's input volume is a percentage where 100 is unchanged, so +20 dB = 1000%.
@@ -22,44 +20,31 @@
         try { return MediaEngineStore?.getInputVolume?.(); } catch (_) { return undefined; }
     };
 
-    // Tries the ways Discord sets the microphone input volume, and says which one it used.
-    function writeVolume(percent) {
-        try {
-            if (typeof Actions?.setInputVolume === "function") {
-                Actions.setInputVolume(percent);
-                return "MediaEngineActions.setInputVolume";
-            }
-        } catch (e) {
-            log.error("Mic Boost: setInputVolume action failed", e);
-        }
+    // Sets the volume straight on the audio engine. Discord's own store holds the input
+    // volume at 100%, so going through it (the setInputVolume action) can't boost.
+    function setEngineVolume(percent) {
         try {
             const e = engine();
             if (typeof e?.setInputVolume === "function") {
                 e.setInputVolume(percent);
-                return "engine.setInputVolume";
+                return true;
             }
-        } catch (e) {
-            log.error("Mic Boost: engine.setInputVolume failed", e);
+        } catch (err) {
+            log.error("Mic Boost: engine.setInputVolume failed", err);
         }
-        try {
-            if (FluxDispatcher?.dispatch) {
-                FluxDispatcher.dispatch({ type: "AUDIO_SET_INPUT_VOLUME", volume: percent });
-                return "AUDIO_SET_INPUT_VOLUME action (guess)";
-            }
-        } catch (e) {
-            log.error("Mic Boost: dispatch failed", e);
-        }
-        return null;
+        return false;
     }
 
     function applyBoost() {
-        if (!(storage.db > 0)) return null;
-        return writeVolume(dbToPercent(storage.db));
+        if (!(storage.db > 0)) return false;
+        return setEngineVolume(dbToPercent(storage.db));
     }
 
     function restoreVolume() {
         const original = typeof storage.original === "number" ? storage.original : 100;
-        return writeVolume(original);
+        const direct = setEngineVolume(original);
+        try { Actions?.setInputVolume?.(original); } catch (_) { /* the store value was never changed */ }
+        return direct;
     }
 
     function boostCommand() {
@@ -82,10 +67,10 @@
                 const value = typeof raw === "string" ? raw.trim().toLowerCase().replace(/db$/, "").trim() : "";
 
                 if (OFF_WORDS.includes(value)) {
-                    const used = restoreVolume();
+                    const ok = restoreVolume();
                     delete storage.db;
                     delete storage.original;
-                    return void showToast(used ? "Mic boost off, input volume restored" : "Mic boost off. Couldn't reach the input volume, check /micdebug");
+                    return void showToast(ok ? "Mic boost off, input volume restored" : "Mic boost off. Couldn't reach the audio engine, check /micdebug");
                 }
 
                 const parsed = parseFloat(value);
@@ -101,18 +86,13 @@
                 }
                 storage.db = db;
 
-                const percent = dbToPercent(db);
-                const used = applyBoost();
-                if (!used) return void showToast("Couldn't find a way to set the input volume. Run /micdebug and check the Kettu logs");
-
-                showToast(`Mic boost ${db} dB (${Math.round(percent)}%)` + (parsed > MAX_DB ? `, capped at ${MAX_DB}` : ""));
-                // Read it back, because Discord may have limited it to a lower value.
-                setTimeout(() => {
-                    const now = currentVolume();
-                    if (typeof now === "number" && Math.abs(now - percent) > 1) {
-                        showToast(`Discord kept the input volume at ${Math.round(now)}%`);
-                    }
-                }, 400);
+                if (!applyBoost()) {
+                    return void showToast("Couldn't reach the audio engine's input volume. Run /micdebug and check the Kettu logs");
+                }
+                showToast(
+                    `Mic boost ${db} dB (${Math.round(dbToPercent(db))}%) sent to the audio engine` +
+                    (parsed > MAX_DB ? `, capped at ${MAX_DB}` : "")
+                );
             }
         };
     }
@@ -137,15 +117,13 @@
             displayDescription: description,
             options: [],
             execute() {
-                const out = { inputVolume: currentVolume(), savedOriginal: storage.original, boostDb: storage.db };
+                const out = { storeInputVolume: currentVolume(), savedOriginal: storage.original, boostDb: storage.db };
                 try {
                     const interesting = /volume|gain|input|agc|automatic/i;
                     const pick = obj => (obj ? methodsOf(obj).filter(n => interesting.test(n)) : null);
-                    const e = engine();
                     out.store = pick(MediaEngineStore);
                     out.actions = pick(Actions);
-                    out.engine = pick(e);
-                    out.engineAll = e ? methodsOf(e) : null;
+                    out.engine = pick(engine());
                 } catch (e) {
                     out.error = String(e);
                 }
@@ -162,13 +140,10 @@
             Actions = findByProps("setInputVolume");
 
             applyBoost();
-            lastChannel = SelectedChannelStore?.getVoiceChannelId?.() ?? null;
-            // Joining a call can reset the input volume, so apply the boost again when the call changes.
+            // Discord pushes its own 100% back to the engine now and then (joining a call, for
+            // example), so while you're in a call the boost is set again every few seconds.
             timer = setInterval(() => {
-                const id = SelectedChannelStore?.getVoiceChannelId?.() ?? null;
-                if (id === lastChannel) return;
-                lastChannel = id;
-                if (id) setTimeout(applyBoost, 500);
+                if (storage.db > 0 && SelectedChannelStore?.getVoiceChannelId?.()) applyBoost();
             }, 3000);
 
             unregisters.push(registerCommand(boostCommand()));
