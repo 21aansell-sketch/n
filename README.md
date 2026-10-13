@@ -17,3 +17,4 @@ plugins that dont work.
 - veiwer (prem works does same thing better)
 - larp
 - timezones thing 
+- cuck plugin
