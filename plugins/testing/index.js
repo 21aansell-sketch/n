@@ -10,7 +10,6 @@
     const STRING = 3; // ApplicationCommandOptionType.STRING
     const ON_WORDS = ["on", "true", "yes", "1", "enable"];
     const OFF_WORDS = ["off", "false", "no", "0", "disable"];
-    const VOICE_FLAG = 1; // speaking flags: 1 = voice, 2 = soundshare, 4 = priority
 
     let UserStore, MediaEngineStore;
     let timer;
@@ -18,12 +17,11 @@
     let rtcUndo = [];
     const unpatches = [];
     const unregisters = [];
-    const connPatches = new Map(); // voice connection -> its unpatch functions
     const logged = new Map();
 
     const myId = () => UserStore?.getCurrentUser?.()?.id;
 
-    // Logs the arguments of a method its first few times it is called, so the real
+    // Logs a method's arguments its first few times it is called, so the real
     // signatures show up in the Kettu logs.
     function logOnce(name, args) {
         const n = logged.get(name) ?? 0;
@@ -36,72 +34,37 @@
         }
     }
 
-    // Your own screen: Discord reports who is talking with a "SPEAKING" action that
-    // carries the user and a flag. Zeroing it for your own user stops the green ring.
+    // YOUR SCREEN. Discord reports who is talking with a "SPEAKING" action that carries
+    // the user and a flag. Zeroing it for your own user stops the ring on your side.
     function onDispatch([action]) {
         if (!storage.hide || action?.type !== "SPEAKING" || !action.speakingFlags) return;
         const me = myId();
         if (me && action.userId === me) action.speakingFlags = 0;
     }
 
-    // Other people: the voice connection tells the server which speaking flags you use.
-    // Setting them to 0 means the server never marks you as speaking.
-    function zeroFlags(args) {
-        if (typeof args[0] === "number") args[0] = 0;
-        else if (typeof args[1] === "number" && args[0] === myId()) args[1] = 0;
-    }
-
-    function setFlags(conn, flags) {
-        try {
-            conn.setSpeakingFlags?.(flags);
-        } catch (e) {
-            log.error("Hide Speaking: setSpeakingFlags failed", e);
-        }
-    }
-
-    function patchConnection(conn) {
-        if (!conn || connPatches.has(conn)) return;
-        const undo = [];
-        const hook = (name, fn) => {
-            if (typeof conn[name] === "function") undo.push(before(name, conn, fn));
-        };
-        hook("setSpeakingFlags", args => {
-            logOnce("setSpeakingFlags", args);
-            if (storage.hide) zeroFlags(args);
-        });
-        hook("handleSpeakingNative", args => logOnce("handleSpeakingNative", args));
-        hook("handleSpeakingFlags", args => logOnce("handleSpeakingFlags", args));
-        hook("handleSpeakingWhileMuted", args => logOnce("handleSpeakingWhileMuted", args));
-        hook("setInputMode", args => logOnce("setInputMode", args));
-        hook("setSilenceThreshold", args => logOnce("setSilenceThreshold", args));
-        hook("emit", args => {
-            if (typeof args[0] === "string" && /speak/i.test(args[0])) logOnce(`emit ${args[0]}`, args);
-        });
-        connPatches.set(conn, undo);
-        log.log("Hide Speaking: patched a voice connection");
-        if (storage.hide) setFlags(conn, 0);
-    }
-
-    // The JS voice connection is what actually sends your "speaking" state to the voice
-    // server (its sendSpeaking function). Forcing that to 0 stops the ring for other people,
-    // while your audio and its SSRC are still announced the normal way.
-    function zeroSpeaking(args) {
+    // EVERYONE ELSE. The JS voice connection's sendSpeaking tells the voice server you're
+    // talking, which is what lights up your ring for other people. Only the "speaking"
+    // notification is changed. The audio engine and its own flags are left alone, so your
+    // voice is still sent. A value of 0 ("stopped") is passed through unchanged.
+    function rewriteSpeaking(args) {
         const first = args[0];
-        if (typeof first === "number") args[0] = 0;
-        else if (typeof first === "boolean") args[0] = false;
-        else if (first && typeof first === "object" && "speaking" in first) first.speaking = 0;
+        if (typeof first === "number") {
+            if (first !== 0) args[0] = 0;
+        } else if (typeof first === "boolean") {
+            if (first) args[0] = false;
+        } else if (first && typeof first === "object" && "speaking" in first) {
+            if (first.speaking) first.speaking = 0;
+        }
     }
 
     function patchRtc(rtc) {
         const undo = [];
-        const hook = (name, fn) => {
-            if (typeof rtc[name] === "function") undo.push(before(name, rtc, fn));
-        };
-        hook("sendSpeaking", args => {
-            logOnce("sendSpeaking", args);
-            if (storage.hide) zeroSpeaking(args);
-        });
-        hook("shouldSendSpeaking", args => logOnce("shouldSendSpeaking", args));
+        if (typeof rtc.sendSpeaking === "function") {
+            undo.push(before("sendSpeaking", rtc, args => {
+                logOnce("sendSpeaking", args);
+                if (storage.hide) rewriteSpeaking(args);
+            }));
+        }
         rtcConn = rtc;
         rtcUndo = undo;
         log.log(`Hide Speaking: patched the RTC connection (sendSpeaking ${typeof rtc.sendSpeaking})`);
@@ -118,35 +81,27 @@
         return rtc && typeof rtc === "object" ? rtc : null;
     }
 
-    // Voice connections only exist while you're in a call, so keep checking for new ones.
+    // The voice connection only exists while you're in a call, so keep checking for a new one.
     function scan() {
         try {
             const rtc = currentRtc();
-            if (rtc !== rtcConn) {
-                rtcUndo.forEach(u => u());
-                rtcUndo = [];
-                rtcConn = null;
-                if (rtc) patchRtc(rtc);
-            }
-
-            const conns = MediaEngineStore?.getMediaEngine?.()?.connections;
-            if (conns) for (const c of conns) patchConnection(c);
-            for (const [c, undo] of connPatches) {
-                if (conns?.has?.(c)) continue;
-                undo.forEach(u => u());
-                connPatches.delete(c);
-            }
+            if (rtc === rtcConn) return;
+            rtcUndo.forEach(u => u());
+            rtcUndo = [];
+            rtcConn = null;
+            if (rtc) patchRtc(rtc);
         } catch (e) {
             log.error("Hide Speaking: scan failed", e);
         }
     }
 
-    function makeCommand() {
+    function hideCommand() {
+        const description = "Hide your speaking ring from everyone. Optionally pass on or off";
         return {
             name: "hidespeaking",
             displayName: "hidespeaking",
-            description: "Hide your speaking indicator. Optionally pass on or off",
-            displayDescription: "Hide your speaking indicator. Optionally pass on or off",
+            description,
+            displayDescription: description,
             options: [{
                 name: "state",
                 displayName: "state",
@@ -165,35 +120,14 @@
                 else return void showToast("Use /hidespeaking on, /hidespeaking off, or just /hidespeaking to toggle");
 
                 scan();
-                for (const conn of connPatches.keys()) setFlags(conn, storage.hide ? 0 : VOICE_FLAG);
-
                 showToast(
-                    `Speaking indicator ${storage.hide ? "hidden" : "shown again"}` +
-                    (connPatches.size ? "" : ". Not in a call, applies when you join one")
+                    storage.hide
+                        ? "Speaking ring hidden for you and everyone else" +
+                          (rtcConn ? ". Applies the next time you talk" : ". Not in a call, applies when you join one")
+                        : "Speaking ring shown again"
                 );
             }
         };
-    }
-
-    // Writes the voice connection's function names to the Kettu logs.
-    function debugConnections() {
-        try {
-            scan();
-            const engine = MediaEngineStore?.getMediaEngine?.();
-            const conns = engine?.connections ? [...engine.connections] : [];
-            const info = conns.map(c => {
-                const names = new Set(Object.keys(c));
-                for (let p = Object.getPrototypeOf(c); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
-                    Object.getOwnPropertyNames(p).forEach(n => names.add(n));
-                }
-                return [...names].filter(n => typeof c[n] === "function").sort();
-            });
-            log.log("Hide Speaking: voice connections", JSON.stringify(info));
-            showToast(`${conns.length} voice connection(s), ${connPatches.size} patched. Details are in the Kettu logs`);
-        } catch (e) {
-            log.error("Hide Speaking: debug failed", e);
-            showToast("Debug failed, check the Kettu logs");
-        }
     }
 
     function methodsOf(obj) {
@@ -206,29 +140,16 @@
         }).sort();
     }
 
-    // Looks for the JS side of the voice connection, which may be what sends your speaking state.
+    // Writes the JS voice connection's function names to the Kettu logs.
     function debugRtc() {
         const out = {};
         try {
-            const channelId = findByStoreName("SelectedChannelStore")?.getVoiceChannelId?.();
-            const store = findByStoreName("RTCConnectionStore");
-            out.store = store ? methodsOf(store) : null;
-            const tries = [
-                () => store?.getRTCConnection?.(channelId),
-                () => store?.getRTCConnection?.(),
-                () => store?.getConnection?.(channelId)
-            ];
-            for (const t of tries) {
-                let c;
-                try { c = t(); } catch (_) { /* try the next one */ }
-                if (c && typeof c === "object") {
-                    out.connection = methodsOf(c);
-                    out.connectionKeys = Object.keys(c);
-                    break;
-                }
+            const rtc = currentRtc();
+            if (rtc) {
+                out.connection = methodsOf(rtc);
+                out.connectionKeys = Object.keys(rtc);
             }
-            const conn = [...(MediaEngineStore?.getMediaEngine?.()?.connections ?? [])][0];
-            if (conn) out.mediaConnectionKeys = Object.keys(conn);
+            out.patched = !!rtcConn;
         } catch (e) {
             out.error = String(e);
         }
@@ -254,23 +175,11 @@
             scan();
             timer = setInterval(scan, 2000);
 
+            unregisters.push(registerCommand(hideCommand()));
+            const text = "Log the voice RTC connection's functions to the Kettu logs";
             unregisters.push(registerCommand({
-                name: "rtcdebug",
-                displayName: "rtcdebug",
-                description: "Log the voice RTC connection's functions to the Kettu logs",
-                displayDescription: "Log the voice RTC connection's functions to the Kettu logs",
-                options: [],
-                execute: debugRtc
-            }));
-
-            unregisters.push(registerCommand(makeCommand()));
-            unregisters.push(registerCommand({
-                name: "speakingdebug",
-                displayName: "speakingdebug",
-                description: "Log the voice connection's functions to the Kettu logs",
-                displayDescription: "Log the voice connection's functions to the Kettu logs",
-                options: [],
-                execute: debugConnections
+                name: "rtcdebug", displayName: "rtcdebug", description: text, displayDescription: text,
+                options: [], execute: debugRtc
             }));
         },
         onUnload() {
@@ -280,11 +189,6 @@
             rtcConn = null;
             unregisters.splice(0).forEach(u => u?.());
             unpatches.splice(0).forEach(u => u());
-            for (const [conn, undo] of connPatches) {
-                undo.forEach(u => u());
-                if (storage.hide) setFlags(conn, VOICE_FLAG);
-            }
-            connPatches.clear();
         }
     };
 })()
