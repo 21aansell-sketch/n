@@ -17,6 +17,7 @@ plugins that dont work.
 - veiwer (prem works does same thing better)
 - timezones thing 
 - cuck plugin
+- testing 
 
 
 the high quality ones
