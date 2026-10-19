@@ -1,0 +1,11 @@
+{
+  "name": "the tags",
+  "description": "dangerously injects a token grabber and malware and trojans into your device",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "0380847ab2ef4d9237a255cbb89a87180407731e39654a13664f357d4de666c9"
+}
