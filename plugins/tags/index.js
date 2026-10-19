@@ -168,7 +168,10 @@
 	}
 
 	// ---------------------------------------------------------------------------------------------
-	// Storage: { useRoleColor: boolean, tags: { [tagId]: TagOverride } }
+	// Storage: { useRoleColor: boolean, tags: { [tagId]: TagOverride }, customTags: CustomTag[] }
+	//
+	// CustomTag: { id, userId, text, color, enabled } -- a tag for one specific person, shown
+	// wherever that person's tag can be shown (messages, member lists, profiles, DMs included).
 	//
 	// TagOverride (everything optional, absent means "as shipped"):
 	//   enabled, text, icon, customSvg, iconOnly, useCustomColor, color, useGradient, gradientColor
@@ -177,6 +180,7 @@
 	function ensureStorage() {
 		if (typeof storage.useRoleColor !== "boolean") storage.useRoleColor = false;
 		if (!storage.tags || typeof storage.tags !== "object") storage.tags = {};
+		if (!Array.isArray(storage.customTags)) storage.customTags = [];
 	}
 
 	/** One tag's changes, or an empty object when it has never been touched. */
@@ -200,6 +204,65 @@
 			storage.tags[id] = {};
 		} catch (error) {
 			report("could not reset tag:", error);
+		}
+	}
+
+	// Custom tags: one entry per person. Every write replaces the whole array with fresh copies, so
+	// the storage proxy always sees a plain change rather than a mutation inside a proxied item.
+
+	const DEFAULT_CUSTOM_COLOR = "#5865F2";
+
+	function customTags() {
+		const list = storage.customTags;
+		return Array.isArray(list) ? list : [];
+	}
+
+	function customEntry(id) {
+		return customTags().find(entry => entry && entry.id === id);
+	}
+
+	/** A snowflake, from a bare ID or a pasted `<@id>` mention; undefined for anything else. */
+	function parseUserId(input) {
+		const value = (input || "").trim();
+		const mention = value.match(/^<@!?(\d{15,21})>$/);
+		if (mention) return mention[1];
+		return /^\d{15,21}$/.test(value) ? value : undefined;
+	}
+
+	/** Adds a blank entry and returns its id. */
+	function addCustomTag() {
+		const id = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+		try {
+			ensureStorage();
+			const copies = customTags().filter(Boolean).map(entry => Object.assign({}, entry));
+			storage.customTags = copies.concat([
+				{ id: id, userId: "", text: "TAG", color: DEFAULT_CUSTOM_COLOR, enabled: true },
+			]);
+		} catch (error) {
+			report("could not add custom tag:", error);
+		}
+		return id;
+	}
+
+	function updateCustomTag(id, patch) {
+		try {
+			ensureStorage();
+			storage.customTags = customTags()
+				.filter(Boolean)
+				.map(entry => Object.assign({}, entry, entry.id === id ? patch : null));
+		} catch (error) {
+			report("could not save custom tag:", error);
+		}
+	}
+
+	function removeCustomTag(id) {
+		try {
+			ensureStorage();
+			storage.customTags = customTags()
+				.filter(entry => entry && entry.id !== id)
+				.map(entry => Object.assign({}, entry));
+		} catch (error) {
+			report("could not delete custom tag:", error);
 		}
 	}
 
@@ -499,9 +562,42 @@
 		);
 	}
 
+	/**
+	 * The custom tag set for this person, or undefined. Matched by user ID alone, so it needs no
+	 * guild and shows in DMs too. If two entries share an ID the first in the list wins.
+	 */
+	function getCustomTag(user) {
+		const userId = user?.id;
+		if (!userId) return undefined;
+
+		for (const entry of customTags()) {
+			if (!entry || entry.enabled === false || entry.userId !== String(userId)) continue;
+
+			const backgroundColor = parseColor(entry.color) || DEFAULT_CUSTOM_COLOR;
+			return {
+				id: "custom:" + entry.id,
+				custom: true,
+				text: entry.text?.trim() || "TAG",
+				textColor: isDarkColor(backgroundColor) ? "#FFFFFF" : "#000000",
+				backgroundColor: backgroundColor,
+				gradientColor: undefined,
+				icon: undefined,
+				customSvg: undefined,
+				iconOnly: false,
+				iconGlyph: undefined,
+				verified: false,
+			};
+		}
+		return undefined;
+	}
+
 	/** The tag this person should show, fully resolved (text, colours, icon), or undefined. */
 	function getTag(guild, channel, user, useRoleColor) {
 		if (!user) return undefined;
+
+		// A tag you set for this exact person beats the permission-based ones.
+		const custom = getCustomTag(user);
+		if (custom) return custom;
 
 		let permissions;
 		if (guild) {
@@ -666,13 +762,20 @@
 					patcher.after("default", ns, (args, ret) => {
 						try {
 							const message = args?.[0]?.message;
-							// A message that already carries a tag (bot, system, automod...) has a
-							// non-empty tagText: leave those alone.
-							if (ret?.tagText || !message?.author) return ret;
+							if (!message?.author) return ret;
 
-							const channel = channelStore()?.getChannel(message.channel_id);
-							const guild = guildStore()?.getGuild(channel?.guild_id);
-							const tag = getTag(guild, channel, message.author, !!storage.useRoleColor);
+							// A tag you set for this person replaces whatever the row would show.
+							const custom = getCustomTag(message.author);
+							// Otherwise a message that already carries a tag (bot, system, automod...)
+							// has a non-empty tagText: leave those alone.
+							if (!custom && ret?.tagText) return ret;
+
+							let tag = custom;
+							if (!tag) {
+								const channel = channelStore()?.getChannel(message.channel_id);
+								const guild = guildStore()?.getGuild(channel?.guild_id);
+								tag = getTag(guild, channel, message.author, !!storage.useRoleColor);
+							}
 							if (!tag) return ret;
 
 							// Native rows cannot host an icon component, so the glyph stands in for it.
@@ -720,9 +823,11 @@
 		if (!nameContainer) return res;
 
 		const existingTag = findInReactTree(nameContainer, isTagElement);
-		if (existingTag && isBuiltInTag(existingTag.props.type)) return res;
+		const custom = getCustomTag(user);
+		// Discord's own tag (bot, system) stays, unless you set a tag for this person.
+		if (!custom && existingTag && isBuiltInTag(existingTag.props.type)) return res;
 
-		const tag = getTag(guildStore()?.getGuild(guildId), undefined, user, !!storage.useRoleColor);
+		const tag = custom || getTag(guildStore()?.getGuild(guildId), undefined, user, !!storage.useRoleColor);
 		if (!tag) return res;
 
 		let newLabel;
@@ -812,12 +917,17 @@
 
 		const addTag = (ret, props) => {
 			const { guildId, user } = props ?? {};
-			if (!user || !guildId) return ret;
+			if (!user) return ret;
+
+			// Permission tags need a server; a tag you set for this person does not, so it also
+			// shows on profiles opened from DMs and friend lists.
+			const custom = getCustomTag(user);
+			if (!custom && !guildId) return ret;
 
 			const tagComponent = findInReactTree(ret, isTagElement);
-			if (tagComponent && isBuiltInTag(tagComponent.props.type)) return ret;
+			if (!custom && tagComponent && isBuiltInTag(tagComponent.props.type)) return ret;
 
-			const tag = getTag(guildStore()?.getGuild(guildId), channelFor(guildId), user, !!storage.useRoleColor);
+			const tag = custom || getTag(guildStore()?.getGuild(guildId), channelFor(guildId), user, !!storage.useRoleColor);
 			if (!tag) return ret;
 
 			if (tagComponent) {
@@ -1064,6 +1174,24 @@
 		return bits.length ? bits.join(", ") : "As it ships";
 	}
 
+	function customSwatch(entry) {
+		const { View } = RN();
+		return h(View, {
+			style: {
+				width: 28,
+				height: 28,
+				borderRadius: 6,
+				backgroundColor: parseColor(entry.color) || DEFAULT_CUSTOM_COLOR,
+				opacity: entry.enabled === false ? 0.4 : 1,
+			},
+		});
+	}
+
+	function describeCustom(entry) {
+		const hidden = entry.enabled === false ? "Hidden · " : "";
+		return hidden + (entry.userId ? "User " + entry.userId : "No user ID yet — won't show");
+	}
+
 	/** Every tag with what it currently looks like, each opening its own editor. */
 	function TagList(props) {
 		const { FormSection, FormRow, FormSwitchRow } = F();
@@ -1084,6 +1212,28 @@
 							onPress: () => props.open(tag.id),
 						}),
 					),
+				),
+				h(
+					FormSection,
+					{ key: "custom", title: "Custom tags — one per person" },
+					...customTags()
+						.filter(Boolean)
+						.map(entry =>
+							h(FormRow, {
+								key: entry.id,
+								label: entry.text?.trim() || "TAG",
+								subLabel: describeCustom(entry),
+								leading: customSwatch(entry),
+								trailing: arrow(),
+								onPress: () => props.openCustom(entry.id),
+							}),
+						),
+					h(FormRow, {
+						key: "add",
+						label: "Add a custom tag",
+						subLabel: "Put your own tag next to someone, everywhere",
+						onPress: props.addCustom,
+					}),
 				),
 				h(
 					FormSection,
@@ -1302,6 +1452,150 @@
 		});
 	}
 
+	/** A tag for one specific person: their user ID, the text and the colour. */
+	function CustomTagEditor(props) {
+		const { View, Text } = RN();
+		const { FormSection, FormRow, FormSwitchRow } = F();
+		useStorage();
+
+		const entry = customEntry(props.id);
+		const [idDraft, setIdDraft] = R().useState(entry?.userId ?? "");
+
+		if (!entry) {
+			return h(Screen, {
+				children: [
+					h(FormRow, { key: "back", label: "← All tags", onPress: props.back }),
+					h(Note, { key: "gone" }, "That custom tag no longer exists."),
+				],
+			});
+		}
+
+		const list = customTags();
+		const index = list.findIndex(other => other && other.id === entry.id);
+		const parsedId = parseUserId(idDraft);
+		const idOk = !idDraft.trim() || !!parsedId;
+		// Two entries for one person: the first in the list is the one that shows.
+		const clash =
+			!!parsedId && list.some((other, i) => i < index && other && other.enabled !== false && other.userId === parsedId);
+
+		const colour = parseColor(entry.color) || DEFAULT_CUSTOM_COLOR;
+		const label = entry.text?.trim() || "TAG";
+
+		const confirmDelete = () => {
+			vendetta.ui.alerts.showConfirmationAlert({
+				title: "Delete this custom tag?",
+				content: "The tag for " + (entry.userId ? "user " + entry.userId : "this person") + " is removed.",
+				confirmText: "Delete",
+				cancelText: "Cancel",
+				confirmColor: "red",
+				onConfirm: () => {
+					removeCustomTag(entry.id);
+					props.back();
+				},
+			});
+		};
+
+		return h(Screen, {
+			children: [
+				h(FormRow, { key: "back", label: "← All tags", onPress: props.back }),
+
+				h(
+					FormSection,
+					{ key: "preview", title: "Preview" },
+					h(
+						View,
+						{ style: { paddingVertical: 16, alignItems: "center" } },
+						h(
+							View,
+							{
+								style: {
+									paddingHorizontal: 6,
+									paddingVertical: 3,
+									borderRadius: 4,
+									backgroundColor: colour,
+								},
+							},
+							h(
+								Text,
+								{ style: { color: isDarkColor(colour) ? "#FFFFFF" : "#000000", fontSize: 10, fontWeight: "700" } },
+								label,
+							),
+						),
+					),
+				),
+
+				h(
+					FormSection,
+					{ key: "show" },
+					h(FormSwitchRow, {
+						label: "Show this tag",
+						subLabel: entry.enabled === false ? "Hidden everywhere" : "Shown wherever this person appears",
+						value: entry.enabled !== false,
+						onValueChange: value => updateCustomTag(entry.id, { enabled: value }),
+					}),
+				),
+
+				h(
+					FormSection,
+					{ key: "who", title: "Who" },
+					h(Input, {
+						title: "User ID",
+						placeholder: "e.g. 123456789012345678",
+						value: idDraft,
+						onChange: value => {
+							setIdDraft(value);
+							const parsed = parseUserId(value);
+							if (parsed) updateCustomTag(entry.id, { userId: parsed });
+							else if (!value.trim()) updateCustomTag(entry.id, { userId: "" });
+						},
+					}),
+					h(
+						Note,
+						{ style: { color: !idOk || clash ? "#ED4245" : "#80848E" } },
+						!idOk
+							? "That isn't a user ID. It is a long number, like 123456789012345678."
+							: clash
+								? "An earlier custom tag already uses this ID, so that one shows instead."
+								: "Turn on Developer Mode (Settings → Advanced) to get a Copy ID option on profiles. A pasted <@id> mention works too.",
+					),
+				),
+
+				h(
+					FormSection,
+					{ key: "text", title: "Text" },
+					h(Input, {
+						placeholder: "TAG",
+						value: entry.text ?? "",
+						onChange: value => updateCustomTag(entry.id, { text: value }),
+					}),
+					h(Note, null, "What the tag reads."),
+				),
+
+				h(
+					FormSection,
+					{ key: "colour", title: "Colour" },
+					h(ColorInput, {
+						key: "colour" + entry.id,
+						label: "Background",
+						value: entry.color ?? "",
+						placeholder: DEFAULT_CUSTOM_COLOR,
+						onChange: value => updateCustomTag(entry.id, { color: value }),
+					}),
+				),
+
+				h(
+					FormSection,
+					{ key: "delete" },
+					h(FormRow, {
+						label: "Delete this custom tag",
+						subLabel: "Removes it for this person",
+						onPress: confirmDelete,
+					}),
+				),
+			],
+		});
+	}
+
 	/** One row per icon, each drawn in the tag's own colour so the choice is the preview. */
 	function IconPicker(props) {
 		const { View } = RN();
@@ -1387,7 +1681,18 @@
 		if (nav.view === "icons") {
 			return h(IconPicker, { id: nav.id, back: () => setNav({ view: "edit", id: nav.id }) });
 		}
-		return h(TagList, { open: id => setNav({ view: "edit", id: id }) });
+		if (nav.view === "custom") {
+			return h(CustomTagEditor, {
+				key: nav.id,
+				id: nav.id,
+				back: () => setNav({ view: "list", id: "" }),
+			});
+		}
+		return h(TagList, {
+			open: id => setNav({ view: "edit", id: id }),
+			openCustom: id => setNav({ view: "custom", id: id }),
+			addCustom: () => setNav({ view: "custom", id: addCustomTag() }),
+		});
 	}
 
 	// ---------------------------------------------------------------------------------------------
