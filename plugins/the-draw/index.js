@@ -1862,6 +1862,16 @@
 		);
 	}
 
+	const diag = { calls: 0, wrapped: 0, names: new Map(), hooks: [], initialized: false };
+	function diagSummary() {
+		const names = [...diag.names.entries()].map(([n, c]) => n + " x" + c).join(", ") || "none";
+		return (
+			"diag: hooks=[" + diag.hooks.join("; ") + "] elementsSeen=" + diag.calls +
+			" panelComponentsWrapped=" + diag.wrapped + " dockInitialized=" + diag.initialized +
+			" relatedNames=[" + names + "]"
+		);
+	}
+
 	function start(session, track) {
 		const useActive = () => {
 			const [, bump] = useReducer(x => x + 1, 0);
@@ -2023,6 +2033,7 @@
 					);
 
 				Panel = ServerDrawerLeftPanel;
+				diag.initialized = true;
 				return h(Panel, { key: element.key, element });
 			} catch (error) {
 				failed = true;
@@ -2080,40 +2091,61 @@
 
 		// Swap the native components for our wrappers the moment React creates their elements,
 		// so no module lookup for the screen that renders them is needed.
+		const DIAG_NAMES = /left|panel|channel|guild|home|drawer|youbar|main|tabs|sidebar|rail/i;
 		const wrapElement = element => {
 			try {
 				if (session.aborted || !element || typeof element !== "object" || !element.type) return element;
+				diag.calls++;
+				if (diag.names.size < 120) {
+					const n = nameOf(element.type);
+					if (n && DIAG_NAMES.test(n)) diag.names.set(n, (diag.names.get(n) || 0) + 1);
+				}
 				const Wrapper = wrapperFor(element.type);
-				return Wrapper ? h(Wrapper, { key: element.key, ...element.props }) : element;
+				if (!Wrapper) return element;
+				diag.wrapped++;
+				return h(Wrapper, { key: element.key, ...element.props });
 			} catch (e) {
 				return element;
 			}
 		};
 		let hooked = 0;
 		const runtime = findByProps("jsx", "jsxs");
+		diag.hooks.push("jsx runtime: " + (runtime ? "found" : "NOT found"));
 		if (runtime) {
 			for (const key of ["jsx", "jsxs"])
 				if (typeof runtime[key] === "function")
 					try {
 						track(patcher.after(key, runtime, (_args, ret) => wrapElement(ret)));
 						hooked++;
-					} catch (e) { reportError(e); }
+						diag.hooks.push("patched " + key);
+					} catch (e) { reportError(e); diag.hooks.push("failed " + key + ": " + (e && e.message)); }
 		}
 		const reactModule = findByProps("createElement", "useState") || React;
 		try {
 			track(patcher.after("createElement", reactModule, (_args, ret) => wrapElement(ret)));
 			hooked++;
-		} catch (e) { reportError(e); }
+			diag.hooks.push("patched createElement");
+		} catch (e) { reportError(e); diag.hooks.push("failed createElement: " + (e && e.message)); }
 		if (!hooked) throw new Error("Server Drawer: could not hook React element creation.");
 
-		// Elements already on screen were created before the patch; they switch over on the next render.
-		try { ui.toasts.showToast("Server Drawer loaded. Reload Discord if the dock does not appear."); } catch (e) {}
+		// Write a summary to the debug logs so a "does nothing" case can be diagnosed.
+		for (const delay of [8000, 30000]) {
+			const timer = setTimeout(() => {
+				try { logger.log("[Server Drawer] " + diagSummary()); } catch (e) {}
+			}, delay);
+			track(() => clearTimeout(timer));
+		}
 	}
 
 	// -------------------------------------------------------------- settings
 
 	function Settings() {
 		useProxy(storage);
+		const [, tick] = useReducer(x => x + 1, 0);
+		useEffect(() => {
+			const timer = setInterval(tick, 1500);
+			return () => clearInterval(timer);
+		}, []);
 		const { FormSection, FormSwitchRow, FormRow, FormSwitch } = ui.components.Forms;
 		const label = "Pull down to mark all as read";
 		const subLabel = "Pull the collapsed dock down until it is flat, then release to mark all servers and DMs as read.";
@@ -2130,6 +2162,15 @@
 							subLabel,
 							trailing: h(FormSwitch, { value: !!storage.pullToMarkRead, onValueChange: v => { storage.pullToMarkRead = v; } }),
 						}),
+			),
+			h(
+				FormSection,
+				{ title: "Diagnostics" },
+				h(
+					View,
+					{ style: { padding: 16 } },
+					h(Text, { selectable: true, style: { color: "#999999", fontSize: 12 } }, diagSummary()),
+				),
 			),
 		);
 	}
