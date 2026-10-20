@@ -1890,8 +1890,52 @@
 					})),
 				);
 
-		const mainChannels = find(byComponent("MainChannels"));
-		if (!mainChannels) throw new Error("Server Drawer: this Discord version has an unsupported home panel (MainChannels not found).");
+		// Names survive in Hermes builds, but a module's file name (what Revenge matched on)
+		// is not a runtime name, so scan every export for a component/hook by its function name.
+		const nameOf = v => {
+			try {
+				if (!v) return undefined;
+				if (typeof v === "function") return v.displayName || v.name;
+				if (typeof v !== "object") return undefined;
+				return v.displayName || nameOf(v.type) || nameOf(v.render);
+			} catch (e) {
+				return undefined;
+			}
+		};
+		const scanNamed = (...names) => {
+			const want = new Set(names);
+			let hit;
+			const tryKey = (parent, key) => {
+				let d;
+				try { d = Object.getOwnPropertyDescriptor(parent, key); } catch (e) { return false; }
+				if (!d || !("value" in d)) return false;
+				const v = d.value;
+				if (!v || (typeof v !== "function" && typeof v !== "object")) return false;
+				const n = nameOf(v);
+				if (!n || !want.has(n)) return false;
+				hit = { parent, key, value: v, name: n };
+				return true;
+			};
+			try {
+				find(m => {
+					if (!m || (typeof m !== "object" && typeof m !== "function")) return false;
+					if (tryKey(m, "default")) return true;
+					let keys;
+					try { keys = Object.keys(m); } catch (e) { return false; }
+					if (keys.length > 80) return false;
+					for (const k of keys) if (tryKey(m, k)) return true;
+					return false;
+				});
+			} catch (e) {}
+			return hit;
+		};
+		// Patch a found component whether it is a memo/forwardRef object (patch .type) or a plain function.
+		const patchFound = (hit, callback) => {
+			if (hit.value && typeof hit.value === "object" && typeof hit.value.type === "function")
+				return patcher.after("type", hit.value, callback);
+			if (typeof hit.parent[hit.key] === "function") return patcher.after(hit.key, hit.parent, callback);
+			throw new Error("cannot patch " + hit.name);
+		};
 
 		let Panel;
 		let failed = false;
@@ -1906,22 +1950,19 @@
 			if (Panel) return h(Panel, { key: element.key, element });
 			try {
 				const inset = findByProps("useYouBarTotalHeight");
-				const shade = find(byComponent("YouBarFloatingShade"));
-				const channelWidth = find(m => m && m.default && m.default.name === "useChannelListWidth");
+				const shade = scanNamed("YouBarFloatingShade");
+				const channelWidth = scanNamed("useChannelListWidth");
 				const chatLayout = findByProps("getChatLayout");
 				const constants = findByProps("DM_WIDTH");
-				if (
-					!inset ||
-					!shade ||
-					typeof shade.default.type !== "function" ||
-					!channelWidth ||
-					typeof channelWidth.default !== "function" ||
-					!chatLayout ||
-					!constants ||
-					!mainChannels.default ||
-					typeof mainChannels.default.type !== "function"
-				)
-					throw new Error("Server Drawer: this Discord version has an unsupported home panel.");
+				const missing = [];
+				if (!inset) missing.push("useYouBarTotalHeight");
+				if (!chatLayout) missing.push("getChatLayout");
+				if (!constants) missing.push("DM_WIDTH");
+				if (missing.length)
+					throw new Error("Server Drawer: unsupported home panel (missing " + missing.join(", ") + ").");
+				// The shade and width hook only fine-tune layout; carry on without them but log it.
+				if (!shade) reportError(new Error("Server Drawer: YouBarFloatingShade not found, skipping backdrop fix"));
+				if (!channelWidth) reportError(new Error("Server Drawer: useChannelListWidth not found, channel list width may be off"));
 
 				const DrawerSurface = createServerDrawer(session);
 				const useInset = () => {
@@ -1954,12 +1995,24 @@
 						: panel;
 				}
 
-				track(patcher.after("type", shade.default, (_args, ret) => h(YouBarBackdrop, { element: ret })));
-				track(
-					patcher.after("default", channelWidth, (_args, width) =>
-						chatLayout.getChatLayout().isChatBesideChannelList ? width : width + constants.DM_WIDTH,
-					),
-				);
+				if (shade)
+					try {
+						track(patchFound(shade, (_args, ret) => h(YouBarBackdrop, { element: ret })));
+					} catch (error) {
+						reportError(error);
+					}
+				if (channelWidth)
+					try {
+						track(
+							patchFound(channelWidth, (_args, width) =>
+								typeof width === "number" && !chatLayout.getChatLayout().isChatBesideChannelList
+									? width + constants.DM_WIDTH
+									: width,
+							),
+						);
+					} catch (error) {
+						reportError(error);
+					}
 				const channelBackground = findByProps("ScreenAlignedThemedGradientSliding");
 				if (channelBackground && typeof channelBackground.default === "function")
 					track(
@@ -1979,49 +2032,82 @@
 			}
 		};
 
+		const PANEL_NAMES = ["LeftMenuTabsInner", "LeftPanelHomeDrawerContainer", "LeftPanelContent"];
 		const wrappers = new Map();
-		const wrapPanel = node => {
+		// Returns a stable replacement component type for one of the native home-panel components.
+		const wrapperFor = type => {
+			const memoType = typeof type === "object" && type !== null && "type" in type ? type : undefined;
+			const original = memoType ? memoType.type : type;
+			if (typeof original !== "function" || !PANEL_NAMES.includes(original.name)) return undefined;
+			let Wrapper = wrappers.get(type);
+			if (!Wrapper) {
+				const render = original;
+				const Component =
+					original.name === "LeftPanelContent"
+						? function ServerDrawerLeftPanelContent(props) {
+								const active = useActive();
+								const rendered = render(active && "panelStyles" in props ? { ...props, panelStyles: undefined } : props);
+								const [ready, setReady] = useState(false);
+								useEffect(() => { setReady(true); }, []);
+								return ready ? initialize(rendered) : rendered;
+							}
+						: function ServerDrawerPanelContainer(props) {
+								const active = useActive();
+								const rendered = render(props);
+								return active ? wrapPanel(rendered) : rendered;
+							};
+				Wrapper = memoType ? memo(Component, memoType.compare) : Component;
+				wrappers.set(type, Wrapper);
+			}
+			return Wrapper;
+		};
+		function wrapPanel(node) {
 			if (Array.isArray(node)) {
 				const children = node.map(wrapPanel);
 				return children.every((child, index) => child === node[index]) ? node : children;
 			}
 			if (!React.isValidElement(node)) return node;
 			const type = node.type;
-			const memoType = typeof type === "object" && type !== null && "type" in type ? type : undefined;
-			const original = memoType ? memoType.type : type;
-			if (typeof original === "function" && original.name === "NonCollapsableGestureDetector")
+			const inner = typeof type === "object" && type !== null && "type" in type ? type.type : type;
+			// The bottom drawer replaces the native horizontal home-drawer gesture.
+			if (typeof inner === "function" && inner.name === "NonCollapsableGestureDetector")
 				return wrapPanel(node.props.children);
-			if (
-				typeof original === "function" &&
-				(original.name === "LeftMenuTabsInner" || original.name === "LeftPanelHomeDrawerContainer" || original.name === "LeftPanelContent")
-			) {
-				let Wrapper = wrappers.get(type);
-				if (!Wrapper) {
-					const render = original;
-					const Component =
-						original.name === "LeftPanelContent"
-							? function ServerDrawerLeftPanelContent(props) {
-									const active = useActive();
-									const rendered = render(active && "panelStyles" in props ? { ...props, panelStyles: undefined } : props);
-									const [ready, setReady] = useState(false);
-									useEffect(() => { setReady(true); }, []);
-									return ready ? initialize(rendered) : rendered;
-								}
-							: function ServerDrawerPanelContainer(props) {
-									const active = useActive();
-									const rendered = render(props);
-									return active ? wrapPanel(rendered) : rendered;
-								};
-					Wrapper = memoType ? memo(Component, memoType.compare) : Component;
-					wrappers.set(type, Wrapper);
-				}
-				return h(Wrapper, { key: node.key, ...node.props });
-			}
+			const Wrapper = wrapperFor(type);
+			if (Wrapper) return h(Wrapper, { key: node.key, ...node.props });
 			const children = wrapPanel(node.props.children);
 			return children === node.props.children ? node : React.cloneElement(node, { children });
-		};
+		}
 
-		track(patcher.after("type", mainChannels.default, (_args, ret) => wrapPanel(ret)));
+		// Swap the native components for our wrappers the moment React creates their elements,
+		// so no module lookup for the screen that renders them is needed.
+		const wrapElement = element => {
+			try {
+				if (session.aborted || !element || typeof element !== "object" || !element.type) return element;
+				const Wrapper = wrapperFor(element.type);
+				return Wrapper ? h(Wrapper, { key: element.key, ...element.props }) : element;
+			} catch (e) {
+				return element;
+			}
+		};
+		let hooked = 0;
+		const runtime = findByProps("jsx", "jsxs");
+		if (runtime) {
+			for (const key of ["jsx", "jsxs"])
+				if (typeof runtime[key] === "function")
+					try {
+						track(patcher.after(key, runtime, (_args, ret) => wrapElement(ret)));
+						hooked++;
+					} catch (e) { reportError(e); }
+		}
+		const reactModule = findByProps("createElement", "useState") || React;
+		try {
+			track(patcher.after("createElement", reactModule, (_args, ret) => wrapElement(ret)));
+			hooked++;
+		} catch (e) { reportError(e); }
+		if (!hooked) throw new Error("Server Drawer: could not hook React element creation.");
+
+		// Elements already on screen were created before the patch; they switch over on the next render.
+		try { ui.toasts.showToast("Server Drawer loaded. Reload Discord if the dock does not appear."); } catch (e) {}
 	}
 
 	// -------------------------------------------------------------- settings
