@@ -27,3 +27,5 @@ the high quality ones
 - fake deafen and mute 
 - ghostping one
 - horse code
+
+the ones that arent listed in dont work, do work
