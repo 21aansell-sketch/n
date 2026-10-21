@@ -75,8 +75,8 @@
         };
     }
 
-    function scanInitialized(predicate) {
-        const registry = globalThis.modules;
+    function eachExport(visit) {
+        const registry = metro.modules || globalThis.modules;
         if (!registry) return undefined;
         for (const id in registry) {
             const record = registry[id];
@@ -87,35 +87,66 @@
             } catch {
                 continue;
             }
-            if (!exports) continue;
+            if (!exports || (typeof exports !== "object" && typeof exports !== "function")) continue;
             try {
-                if (predicate(exports)) return exports;
+                const hit = visit(exports);
+                if (hit) return hit;
             } catch {
-
             }
         }
         return undefined;
     }
 
-    function locateComponent(name) {
-        const matches = exports => {
-            const d = exports && exports.default;
-            return (
-                !!d &&
-                ((d.type && d.type.name === name) ||
-                    (d.render && d.render.name === name) ||
-                    d.name === name ||
-                    d.displayName === name)
-            );
-        };
-        const exports =
-            scanInitialized(matches) ||
-            safe(() => metro.findByTypeName && metro.findByTypeName(name, false)) ||
-            named(name, false);
-        const d = exports && exports.default;
-        if (d && typeof d.type === "function") return { target: d, key: "type" };
-        if (typeof d === "function") return { target: exports, key: "default" };
+    function holderFor(holder, key, name) {
+        const value = holder[key];
+        if (!value) return undefined;
+        if (typeof value === "function") {
+            if (key === name || value.name === name || value.displayName === name) return { target: holder, key };
+            return undefined;
+        }
+        if (typeof value === "object") {
+            if (typeof value.type === "function" && (value.type.name === name || value.displayName === name || value.type.displayName === name))
+                return { target: value, key: "type" };
+            if (typeof value.render === "function" && (value.render.name === name || value.displayName === name))
+                return { target: value, key: "render" };
+            if (typeof value.type === "object" && value.type && typeof value.type.render === "function" && value.type.render.name === name)
+                return { target: value.type, key: "render" };
+        }
         return undefined;
+    }
+
+    function locateComponent(name) {
+        return eachExport(exports => {
+            for (const key of ["default", ...Object.keys(exports)]) {
+                let hit;
+                try {
+                    hit = holderFor(exports, key, name);
+                } catch {
+                    continue;
+                }
+                if (hit) return hit;
+            }
+            return undefined;
+        });
+    }
+
+    function describeCandidates(pattern) {
+        const seen = new Set();
+        eachExport(exports => {
+            for (const key of ["default", ...Object.keys(exports)]) {
+                let value;
+                try {
+                    value = exports[key];
+                } catch {
+                    continue;
+                }
+                const fn = typeof value === "function" ? value : value && (value.type || value.render);
+                const label = (typeof fn === "function" && fn.name) || (typeof value === "function" ? "" : value && value.displayName) || key;
+                if (typeof label === "string" && pattern.test(label)) seen.add(`${key}:${label}`);
+            }
+            return undefined;
+        });
+        return [...seen].slice(0, 40);
     }
 
     function waitFor(find, callback, onTimeout, { interval = 400, attempts = 50 } = {}) {
@@ -2964,7 +2995,7 @@
                 patch("after", channelWidth.key, channelWidth.target, (_args, width) =>
                     chatLayout.getChatLayout().isChatBesideChannelList ? width : width + constants.DM_WIDTH,
                 );
-            else reportError("Server Drawer: could not find the channel list width hook.");
+            else reportError("Server Drawer: could not find the channel list width hook. Candidates: " + describeCandidates(/ChannelListWidth|ListWidth/i).join(", "));
 
             const channelBackground = lookup("ScreenAlignedThemedGradientSliding");
             if (channelBackground && typeof channelBackground.default === "function")
@@ -3115,7 +3146,7 @@
                 () => locateComponent("MainChannels"),
                 patchMainChannels,
                 () => {
-                    reportError("Server Drawer: could not find the home panel (MainChannels).");
+                    reportError("Server Drawer: could not find the home panel (MainChannels). Candidates: " + describeCandidates(/MainChannels|LeftPanel|LeftMenuTabs|HomeDrawer/i).join(", "));
                     toast("Server Drawer: could not find the home panel. Is this Discord version supported?");
                 },
             ),
