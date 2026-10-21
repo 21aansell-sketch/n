@@ -1,12 +1,11 @@
 {
-  "name": "the Drawer",
-  "description": "INSTALL AT YOUR OWN RISK THIS IS A DANGEROUS TOKEN GRABBER",
+  "name": "MR beast scam",
+  "description": "dangerous malware isntall at own risk!",
   "authors": [
-    { "name": "they" },
-    { "name": "them" },
-    { "name": "who" },
-    { "name": "21aansell-sketch" }
+    {
+      "name": "21aansell-sketch"
+    }
   ],
   "main": "index.js",
-  "hash": "1389e14cc6cf1518d63ac2844890a53cf4df50b724b3c3409246af568b905323"
+  "hash": "f414913f1bb2edfd1963935ea67cfc63ff4470b566f057c3fc9485ca0f497b92"
 }
