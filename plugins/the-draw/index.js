@@ -3007,7 +3007,7 @@
                 });
         } else reportError("Server Drawer: unsupported channel list layout.");
 
-        const patchMainChannels = located => {
+        const patchHomePanel = () => {
             if (signal.aborted) return;
             let Panel;
             let failed = false;
@@ -3082,9 +3082,9 @@
             };
 
             const wrappers = new Map();
-            const wrapPanel = node => {
+            const wrapPanel = (node, deep = true) => {
                 if (Array.isArray(node)) {
-                    const children = node.map(wrapPanel);
+                    const children = node.map(child => wrapPanel(child, deep));
                     return children.every((child, index) => child === node[index]) ? node : children;
                 }
                 if (!React.isValidElement(node)) return node;
@@ -3093,7 +3093,7 @@
                 const original = memoType?.type ?? type;
 
                 if (typeof original === "function" && original.name === "NonCollapsableGestureDetector")
-                    return wrapPanel(node.props.children);
+                    return wrapPanel(node.props.children, deep);
                 if (
                     typeof original === "function" &&
                     (original.name === "LeftMenuTabsInner" ||
@@ -3103,6 +3103,7 @@
                     let Wrapper = wrappers.get(type);
                     if (!Wrapper) {
                         const render = original;
+                        console.log(TAG, "hooked " + original.name);
 
                         const Component =
                             original.name === "LeftPanelContent"
@@ -3130,27 +3131,22 @@
                     }
                     return h(Wrapper, { key: node.key, ...node.props });
                 }
+                if (!deep) return node;
                 const children = wrapPanel(node.props.children);
                 return children === node.props.children ? node : React.cloneElement(node, { children });
             };
 
-            if (typeof located.target[located.key] !== "function") {
-                reportError(new Error("Server Drawer: this Discord version has an unsupported home panel."));
-                return;
-            }
-            patch("after", located.key, located.target, (_args, rendered) => wrapPanel(rendered));
+            const runtime = unwrap(props("jsx", "jsxs"), "jsx");
+            const targets = [[React, "createElement"]];
+            if (runtime) for (const key of ["jsx", "jsxs", "jsxDEV"]) targets.push([runtime, key]);
+            for (const [target, key] of targets)
+                if (typeof target[key] === "function")
+                    patch("after", key, target, (_args, element) =>
+                        element && typeof element === "object" && element.type ? wrapPanel(element, false) : element,
+                    );
         };
 
-        stops.push(
-            waitFor(
-                () => locateComponent("MainChannels"),
-                patchMainChannels,
-                () => {
-                    reportError("Server Drawer: could not find the home panel (MainChannels). Candidates: " + describeCandidates(/MainChannels|LeftPanel|LeftMenuTabs|HomeDrawer/i).join(", "));
-                    toast("Server Drawer: could not find the home panel. Is this Discord version supported?");
-                },
-            ),
-        );
+        patchHomePanel();
 
         return {
             stop() {
