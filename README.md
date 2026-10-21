@@ -18,7 +18,7 @@ plugins that dont work.
 - timezones thing 
 - cuck plugin
 - testing 
-
+- the draw
 
 the high quality ones
 - delete2
