@@ -19,6 +19,7 @@ plugins that dont work.
 - cuck plugin
 - testing 
 - the draw
+- hide
 
 the high quality ones
 - delete2
