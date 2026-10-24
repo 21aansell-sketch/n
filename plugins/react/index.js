@@ -12,7 +12,7 @@
     const MAX_REACTIONS = 20; // Discord's hard limit of unique reactions per message
     const DEFAULT_EMOJIS = "😂 💀 🔥 😭 👍 👎 ❤️ 😈 🤡 💯 👀 🙏 😎 🤔 🥶 🤯 😡 🎉 🫡 🗿";
 
-    let RestAPI, ActionSheet;
+    let RestAPI, ActionSheet, ReactionActions;
     const unpatches = [];
     let unpatchSheet;
     let running = false;
@@ -51,6 +51,23 @@
         return e?.status ?? e?.statusCode ?? e?.response?.status ?? e?.body?.status;
     }
 
+    function errorText(e) {
+        const status = errorStatus(e);
+        const msg = e?.body?.message ?? e?.message ?? (typeof e === "string" ? e : "");
+        return [status, msg].filter(Boolean).join(" ") || "unknown error";
+    }
+
+    // Fallback: Discord's own reaction action, used only if the raw REST call fails.
+    function toEmojiObject(key) {
+        const m = key.match(/^(\w+):(\d+)$/);
+        return m ? { id: m[2], name: m[1], animated: false } : { id: null, name: key, animated: false };
+    }
+
+    async function addReactionFallback(channelId, messageId, key) {
+        if (!ReactionActions?.addReaction) throw new Error("no fallback available");
+        await ReactionActions.addReaction(channelId, messageId, toEmojiObject(key), "Message Reaction Picker");
+    }
+
     async function spam(message) {
         if (running) return showToast("Reaction spam already running");
         if (!RestAPI?.put) return showToast("Couldn't find Discord's REST API");
@@ -62,12 +79,21 @@
         running = true;
         cancelled = false;
         let sent = 0;
+        let failed = 0;
+        let lastError = null;
 
         try {
             for (const emoji of emojis) {
                 if (cancelled) break;
                 try {
-                    await addReaction(message.channel_id, message.id, emoji);
+                    try {
+                        await addReaction(message.channel_id, message.id, emoji);
+                    } catch (e) {
+                        const status = errorStatus(e);
+                        if (status === 429 || status === 401 || status === 403) throw e;
+                        log.error("Reaction Spam: REST add failed, trying fallback", emoji, e);
+                        await addReactionFallback(message.channel_id, message.id, emoji).catch(() => { throw e; });
+                    }
                     sent++;
                 } catch (e) {
                     const status = errorStatus(e);
@@ -80,11 +106,15 @@
                         return;
                     }
                     // Bad emoji or some other per-emoji failure: skip it and carry on.
+                    failed++;
+                    lastError = e;
                     log.error("Reaction Spam: failed to add", emoji, e);
                 }
                 if (delay) await sleep(delay);
             }
-            showToast(cancelled ? `Stopped after ${sent} reaction(s)` : `Added ${sent} reaction(s)`);
+            if (cancelled) showToast(`Stopped after ${sent} reaction(s)`);
+            else if (!sent && lastError) showToast(`Added 0, all ${failed} failed: ${errorText(lastError)}`);
+            else showToast(`Added ${sent} reaction(s)${failed ? `, ${failed} failed (${errorText(lastError)})` : ""}`);
         } catch (e) {
             log.error("Reaction Spam:", e);
             showToast("Reaction spam failed, check logs");
@@ -204,6 +234,7 @@
             storage.delay ??= "400";
             RestAPI = findByProps("getAPIBaseURL", "get", "put") ?? findByProps("getAPIBaseURL", "put");
             if (!RestAPI) log.error("Reaction Spam: couldn't find the REST API module");
+            ReactionActions = findByProps("addReaction", "removeReaction") ?? findByProps("addReaction");
             patchSheet();
         },
         onUnload() {
