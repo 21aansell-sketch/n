@@ -75,6 +75,22 @@
         return false;
     }
 
+    // Separate function so each patch keeps its own name (a shared loop variable
+    // made every log line show the same name last time).
+    function probeOne(obj, name) {
+        try {
+            unpatches.push(
+                patcher.instead(name, obj, (args, orig) => {
+                    const result = orig(...args);
+                    if (args.some(mentions) || mentions(result)) {
+                        logger.log(`[NCA probe] ${name}(${args.map(brief).join(", ")}) -> ${brief(result)}`);
+                    }
+                    return result;
+                })
+            );
+        } catch (e) {}
+    }
+
     function probe() {
         const mods = metro.modules || {};
         let count = 0;
@@ -98,17 +114,7 @@
                     try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (e) { continue; }
                     if (!desc || typeof desc.value !== "function" || !desc.writable) continue;
                     count++;
-                    try {
-                        unpatches.push(
-                            patcher.instead(k, obj, (args, orig) => {
-                                const result = orig(...args);
-                                if (args.some(mentions) || mentions(result)) {
-                                    logger.log(`[NCA probe] ${k}(${args.map(brief).join(", ")}) -> ${brief(result)}`);
-                                }
-                                return result;
-                            })
-                        );
-                    } catch (e) {}
+                    probeOne(obj, k);
                 }
             }
         }
