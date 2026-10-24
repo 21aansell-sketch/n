@@ -28,6 +28,6 @@ the high quality ones
 - fake deafen and mute 
 - ghostping one
 - horse code
-- react sorta high quality idk
+- react sorta high quality idk not really tho but its ok 
   
 the ones that arent listed in dont work, do work
