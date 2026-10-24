@@ -29,11 +29,42 @@
         const tokens = String(raw ?? "").match(/<a?:\w+:\d+>|\w+:\d+|[^\s,]+/g) ?? [];
         for (const t of tokens) {
             const custom = t.match(/^<?a?:?(\w+):(\d+)>?$/);
-            const key = custom ? `${custom[1]}:${custom[2]}` : t;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            out.push(key);
-            if (out.length >= MAX_REACTIONS) break;
+            // Unicode emojis typed with no spaces between them ("😂💀🔥") are split apart here.
+            const keys = custom ? [`${custom[1]}:${custom[2]}`] : /[^\x00-\x7F]/.test(t) ? splitEmoji(t) : [t];
+            for (const key of keys) {
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(key);
+                if (out.length >= MAX_REACTIONS) return out;
+            }
+        }
+        return out;
+    }
+
+    // Splits a run of emojis into individual emojis, keeping skin tones, ZWJ sequences,
+    // variation selectors, keycaps and flags together.
+    function splitEmoji(str) {
+        const cps = Array.from(str);
+        const isMod = c => {
+            const n = c.codePointAt(0);
+            return n === 0xFE0F || n === 0xFE0E || n === 0x20E3
+                || (n >= 0x1F3FB && n <= 0x1F3FF) || (n >= 0xE0020 && n <= 0xE007F);
+        };
+        const isFlag = c => {
+            const n = c.codePointAt(0);
+            return n >= 0x1F1E6 && n <= 0x1F1FF;
+        };
+        const out = [];
+        let i = 0;
+        while (i < cps.length) {
+            let g = cps[i++];
+            if (isFlag(g) && i < cps.length && isFlag(cps[i])) g += cps[i++];
+            while (i < cps.length) {
+                if (isMod(cps[i])) g += cps[i++];
+                else if (cps[i] === "‍" && i + 1 < cps.length) { g += cps[i] + cps[i + 1]; i += 2; }
+                else break;
+            }
+            out.push(g);
         }
         return out;
     }
@@ -114,7 +145,7 @@
             }
             if (cancelled) showToast(`Stopped after ${sent} reaction(s)`);
             else if (!sent && lastError) showToast(`Added 0, all ${failed} failed: ${errorText(lastError)}`);
-            else showToast(`Added ${sent} reaction(s)${failed ? `, ${failed} failed (${errorText(lastError)})` : ""}`);
+            else showToast(`Added ${sent}/${emojis.length} reaction(s)${failed ? `, ${failed} failed (${errorText(lastError)})` : ""}`);
         } catch (e) {
             log.error("Reaction Spam:", e);
             showToast("Reaction spam failed, check logs");
