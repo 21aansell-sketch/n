@@ -3,7 +3,7 @@
   "description": "Stops on a 429.",
   "authors": [
     {
-      "name": "@fqxk on discord"
+      "name": "21aansell-sketch"
     }
   ],
   "main": "index.js",
