@@ -1,0 +1,14 @@
+{
+  "name": "Reactions",
+  "description": "Stops on a 429.",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "24dfe92eabf20374dd6580770b71d84259ce6d4d4b585dcc635e67edcb8c5dc4",
+  "vendetta": {
+    "icon": "ic_add_reaction_24px"
+  }
+}
