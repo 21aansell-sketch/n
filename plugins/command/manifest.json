@@ -1,0 +1,14 @@
+{
+  "name": "No Command Autofill",
+  "description": "stop being annoying pls",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "634b1c87fb9fa8ff9a3821e486b630d32d20fe7720ad0e1f21fb17d2ea56f715",
+  "vendetta": {
+    "icon": "ic_slash"
+  }
+}
