@@ -2,128 +2,79 @@
     // Kettu/Vendetta evaluates this file as a single expression, so everything
     // lives inside this function.
     //
-    // Goal: "/ba" must not turn into the closest command (e.g. /background),
-    // including when you press the send button. A command should only be used
-    // when you tap it, or when you typed its full name.
-    //
-    // I can't see Discord's current internals from here, so this version has
-    // two parts:
-    //  1. BLOCK: patches the likely command-matching functions (best guesses).
-    //  2. PROBE: logs every command-related function that gets called with your
-    //     text, so we can find the real one. Use it once, then send me the logs.
+    // Stops Discord from autofilling the closest slash command when you press
+    // send with partial text like "/ba". Found via logs: that autofill goes
+    // trackCommandSelected -> setActiveCommand -> toDraftCommand, all called
+    // from sendCommand/handleSend/handlePressSend. Tapping a suggestion doesn't
+    // go through those, so it is left alone, and so is typing a full command name.
     const { metro, patcher, logger } = vendetta;
-    const { findByProps } = metro;
 
-    const BLOCK = true;
-    const PROBE = true;
-    const PROBE_TEXT = "ba"; // type "/ba" and press send, then check Settings > Debug logs
-
-    const CANDIDATES = [
-        [["getActiveCommand"], ["getActiveCommand"]],
-        [["getCommandFromText"], ["getCommandFromText"]],
-        [["getMatchingCommand"], ["getMatchingCommand"]],
-        [["autocompleteCommand"], ["autocompleteCommand"]],
-        [["getAutocompleteCommand"], ["getAutocompleteCommand"]],
-        [["parseCommand", "queryCommands"], ["parseCommand"]],
-    ];
+    // Functions to guard. The first three are the autofill itself; the last two
+    // are only watched to know what text is currently in the box.
+    const GUARDED = ["setActiveCommand", "toDraftCommand", "trackCommandSelected"];
+    const WATCHED = ["resolveDraftCommand", "isDraftCommandValidForText"];
 
     let unpatches = [];
+    let lastText = "";
 
-    function typedName(args) {
-        const text = args.find(a => typeof a === "string");
-        if (!text || text[0] !== "/") return null;
-        return text.slice(1).split(/\s/)[0].toLowerCase();
+    function sendInStack() {
+        try {
+            return /sendCommand|handleSend|handlePressSend/.test(String(new Error().stack));
+        } catch (e) {
+            return false;
+        }
     }
 
-    function cmdName(result) {
-        const c = result && result.command ? result.command : result;
-        return String((c && (c.displayName || c.name)) || "").toLowerCase();
+    function nameOf(args) {
+        try {
+            let c = args[0];
+            if (c && c.command) c = c.command;
+            if (!c || typeof c !== "object") return "";
+            return String(c.displayName || c.name || c.untranslatedName || "").toLowerCase();
+        } catch (e) {
+            return "";
+        }
     }
 
-    function patchBlock(mod, fn) {
+    // Did the user type the full command name (optionally followed by options)?
+    function fullyTyped(name) {
+        const typed = lastText.replace(/^\//, "").trim().toLowerCase();
+        return typed === name || typed.indexOf(name + " ") === 0;
+    }
+
+    function guard(obj, name) {
         unpatches.push(
-            patcher.instead(fn, mod, (args, orig) => {
-                const result = orig(...args);
-                if (!result) return result;
-                const typed = typedName(args);
-                if (typed == null) return result;
-                if (cmdName(result) === typed) return result;
-                logger.log(`[NoCommandAutofill] blocked ${fn}: "${typed}" -> "${cmdName(result)}"`);
-                return undefined;
+            patcher.instead(name, obj, (args, orig) => {
+                if (lastText[0] === "/" && sendInStack()) {
+                    const cmd = nameOf(args);
+                    if (cmd && !fullyTyped(cmd)) {
+                        logger.log(`[NCA] blocked ${name}: typed "${lastText}" -> "${cmd}"`);
+                        return name === "toDraftCommand" ? null : undefined;
+                    }
+                }
+                return orig(...args);
             })
         );
     }
 
-    function brief(v) {
-        try {
-            if (typeof v === "string") return JSON.stringify(v.slice(0, 60));
-            if (v == null || typeof v !== "object") return String(v);
-            const keys = Object.keys(v).slice(0, 8).join(",");
-            const name = v.displayName || v.name || (v.command && (v.command.displayName || v.command.name));
-            return `{${keys}}${name ? " name=" + name : ""}`;
-        } catch (e) { return "?"; }
+    function watch(obj, name) {
+        unpatches.push(
+            patcher.instead(name, obj, (args, orig) => {
+                if (typeof args[1] === "string") lastText = args[1];
+                return orig(...args);
+            })
+        );
     }
 
-    function mentions(v) {
-        try {
-            if (typeof v === "string") return v.toLowerCase().includes(PROBE_TEXT);
-            if (v && typeof v === "object") {
-                const n = String(v.displayName || v.name || (v.command && (v.command.displayName || v.command.name)) || v.content || v.text || "");
-                return n.toLowerCase().includes(PROBE_TEXT);
-            }
-        } catch (e) {}
-        return false;
-    }
-
-    // Functions we know are involved: log their plain field values and who called them.
-    const DETAIL = new Set(["setActiveCommand", "trackCommandSelected"]);
-
-    function fields(o) {
-        try {
-            if (!o || typeof o !== "object") return String(o);
-            return Object.keys(o)
-                .filter(k => ["string", "number", "boolean"].includes(typeof o[k]))
-                .map(k => `${k}=${String(o[k]).slice(0, 40)}`)
-                .join(" ");
-        } catch (e) { return "?"; }
-    }
-
-    function stack() {
-        try {
-            return String(new Error().stack)
-                .split("\n").slice(2, 40)
-                .map(s => s.trim().replace(/^at /, ""))
-                .filter(s => !/native|kettu:|github\.io/.test(s))
-                .slice(0, 8)
-                .map(s => s.slice(0, 60))
-                .join(" | ");
-        } catch (e) { return "?"; }
-    }
-
-    // Separate function so each patch keeps its own name (a shared loop variable
-    // made every log line show the same name last time).
-    function probeOne(obj, name) {
-        try {
-            unpatches.push(
-                patcher.instead(name, obj, (args, orig) => {
-                    const result = orig(...args);
-                    if (args.some(mentions) || mentions(result)) {
-                        logger.log(`[NCA probe] ${name}(${args.map(brief).join(", ")}) -> ${brief(result)}`);
-                    }
-                    if (DETAIL.has(name)) {
-                        logger.log(`[NCA detail] ${name} ${fields(args[0])} | stack: ${stack()}`);
-                    }
-                    return result;
-                })
-            );
-        } catch (e) {}
-    }
-
-    function probe() {
+    function install() {
         const mods = metro.modules || {};
-        let count = 0;
+        const done = [];
+        function once(obj, name) {
+            for (const d of done) if (d[0] === obj && d[1] === name) return false;
+            done.push([obj, name]);
+            return true;
+        }
         for (const id of Object.keys(mods)) {
-            if (count >= 200) break;
             let exp;
             try {
                 const m = mods[id];
@@ -134,36 +85,24 @@
             const targets = [exp];
             try { if (exp.default && typeof exp.default === "object") targets.push(exp.default); } catch (e) {}
             for (const obj of targets) {
-                let keys;
-                try { keys = Object.keys(obj); } catch (e) { continue; }
-                for (const k of keys) {
-                    if (!/command/i.test(k)) continue;
+                for (const name of GUARDED.concat(WATCHED)) {
                     let desc;
-                    try { desc = Object.getOwnPropertyDescriptor(obj, k); } catch (e) { continue; }
+                    try { desc = Object.getOwnPropertyDescriptor(obj, name); } catch (e) { continue; }
                     if (!desc || typeof desc.value !== "function" || !desc.writable) continue;
-                    count++;
-                    probeOne(obj, k);
+                    if (!once(obj, name)) continue;
+                    try {
+                        if (GUARDED.indexOf(name) !== -1) guard(obj, name);
+                        else watch(obj, name);
+                    } catch (e) {}
                 }
             }
         }
-        logger.log(`[NCA probe] watching ${count} command-related functions`);
+        logger.log(`[NCA] patched ${unpatches.length} functions`);
     }
 
     return {
         onLoad() {
-            if (BLOCK) {
-                for (const [props, fns] of CANDIDATES) {
-                    let mod;
-                    try { mod = findByProps(...props); } catch (e) {}
-                    if (!mod) continue;
-                    for (const fn of fns) {
-                        if (typeof mod[fn] === "function") patchBlock(mod, fn);
-                    }
-                }
-            }
-            if (PROBE) {
-                try { probe(); } catch (e) { logger.log("[NCA probe] failed: " + e); }
-            }
+            try { install(); } catch (e) { logger.log("[NCA] install failed: " + e); }
         },
         onUnload() {
             for (const u of unpatches) { try { u(); } catch (e) {} }
