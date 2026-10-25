@@ -75,6 +75,28 @@
         return false;
     }
 
+    // Functions we know are involved: log their plain field values and who called them.
+    const DETAIL = new Set(["setActiveCommand", "trackCommandSelected"]);
+
+    function fields(o) {
+        try {
+            if (!o || typeof o !== "object") return String(o);
+            return Object.keys(o)
+                .filter(k => ["string", "number", "boolean"].includes(typeof o[k]))
+                .map(k => `${k}=${String(o[k]).slice(0, 40)}`)
+                .join(" ");
+        } catch (e) { return "?"; }
+    }
+
+    function stack() {
+        try {
+            return String(new Error().stack)
+                .split("\n").slice(2, 9)
+                .map(s => s.trim().replace(/^at /, "").slice(0, 70))
+                .join(" | ");
+        } catch (e) { return "?"; }
+    }
+
     // Separate function so each patch keeps its own name (a shared loop variable
     // made every log line show the same name last time).
     function probeOne(obj, name) {
@@ -84,6 +106,9 @@
                     const result = orig(...args);
                     if (args.some(mentions) || mentions(result)) {
                         logger.log(`[NCA probe] ${name}(${args.map(brief).join(", ")}) -> ${brief(result)}`);
+                    }
+                    if (DETAIL.has(name)) {
+                        logger.log(`[NCA detail] ${name} ${fields(args[0])} | stack: ${stack()}`);
                     }
                     return result;
                 })
