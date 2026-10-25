@@ -91,8 +91,11 @@
     function stack() {
         try {
             return String(new Error().stack)
-                .split("\n").slice(2, 9)
-                .map(s => s.trim().replace(/^at /, "").slice(0, 70))
+                .split("\n").slice(2, 40)
+                .map(s => s.trim().replace(/^at /, ""))
+                .filter(s => !/native|kettu:|github\.io/.test(s))
+                .slice(0, 8)
+                .map(s => s.slice(0, 60))
                 .join(" | ");
         } catch (e) { return "?"; }
     }
