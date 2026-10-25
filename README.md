@@ -20,6 +20,7 @@ plugins that dont work.
 - testing 
 - the draw
 - hide
+- command
 
 the high quality ones
 - delete2
