@@ -1,7 +1,14 @@
 {
   "name": "Speaking Flag",
-  "description": "ok",
-  "authors": [{ "name": "21aansell-sketch" }],
+  "description": "no speaking indicator",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
   "main": "index.js",
-  "vendetta": { "icon": "ic_mic" }
+  "vendetta": {
+    "icon": "MicrophoneSlashIcon"
+  },
+  "hash": "d0f37cd67b263026b13536e0252963b5924fe4144306f800b5fd7153b62f456f"
 }
