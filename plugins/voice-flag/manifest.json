@@ -1,0 +1,7 @@
+{
+  "name": "Speaking Flag",
+  "description": "ok",
+  "authors": [{ "name": "21aansell-sketch" }],
+  "main": "index.js",
+  "vendetta": { "icon": "ic_mic" }
+}
