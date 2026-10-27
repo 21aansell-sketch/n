@@ -20,6 +20,7 @@
     ];
 
     const SEND_GAP_MS = 1500;
+    const FORCE_GAP_MS = 2000;
     const REFRESH_MS = 120000;
 
     const assetManager = findByProps("getAssetIds");
@@ -121,7 +122,7 @@
         return act;
     }
 
-    async function apply() {
+    async function apply(force) {
         const my = ++runId;
         const list = (storage.activities || []).filter(a => a && a.enabled);
         const built = [];
@@ -144,6 +145,11 @@
                 send(sid, pid, null);
                 live.delete(sid);
             }
+        }
+        if (force && built.length) {
+            for (const b of built) send(b.socketId, b.pid, null);
+            await new Promise(r => setTimeout(r, FORCE_GAP_MS));
+            if (my !== runId) return;
         }
         for (let i = 0; i < built.length; i++) {
             const b = built[i];
@@ -169,7 +175,7 @@
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
             live.clear();
-            apply().catch(e => logger.error(TAG, e));
+            apply(true).catch(e => logger.error(TAG, e));
         }, 2000);
     }
 
@@ -311,7 +317,7 @@
                 { style: { padding: 16 } },
                 h(FormText, { style: { marginBottom: 12 } },
                     "Toggle the activities you want, edit them, then press Apply. Each enabled activity is sent as its own presence."),
-                h(Button, { label: "Apply presence", onPress: () => apply().catch(e => logger.error(TAG, e)) }),
+                h(Button, { label: "Apply presence", onPress: () => apply(true).catch(e => logger.error(TAG, e)) }),
                 h(Button, { label: "Clear all presence", color: "#4f545c", onPress: () => clearAll() }),
                 h(Button, {
                     label: "Add activity",
@@ -334,7 +340,7 @@
         onLoad() {
             for (const [ev, fn] of EVENTS) FluxDispatcher.subscribe(ev, fn);
             refreshTimer = setInterval(() => {
-                if (live.size) apply().catch(e => logger.error(TAG, e));
+                if (live.size) apply(true).catch(e => logger.error(TAG, e));
             }, REFRESH_MS);
             apply().catch(e => logger.error(TAG, e));
         },
