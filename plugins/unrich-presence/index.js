@@ -19,9 +19,11 @@
         { label: "Competing", value: 5 },
     ];
 
-    const SEND_GAP_MS = 1500;
-    const FORCE_GAP_MS = 2000;
-    const REFRESH_MS = 120000;
+    const SEND_GAP_MS = 300;
+    const REFRESH_MS = 300000;
+    const ASSET_TIMEOUT_MS = 3000;
+    const assetCache = new Map();
+    let nudge = false;
 
     const assetManager = findByProps("getAssetIds");
 
@@ -79,16 +81,25 @@
             return out;
         }
         const raw = present.map(k => k.value);
-        try {
-            let ids = assetManager.getAssetIds(appId, raw);
-            if (!ids || !ids.length) ids = await assetManager.fetchAssetIds(appId, raw);
-            present.forEach((k, i) => {
-                out[k.field] = (ids && ids[i]) || k.value;
-            });
-        } catch (e) {
-            logger.error(TAG, "asset resolve failed", e);
-            for (const k of present) out[k.field] = k.value;
+        const cacheKey = appId + "|" + raw.join("|");
+        let ids = assetCache.get(cacheKey);
+        if (!ids) {
+            try {
+                ids = assetManager.getAssetIds(appId, raw);
+                if (!ids || !ids.length) {
+                    ids = await Promise.race([
+                        assetManager.fetchAssetIds(appId, raw),
+                        new Promise(r => setTimeout(() => r(null), ASSET_TIMEOUT_MS)),
+                    ]);
+                }
+                if (ids && ids.length) assetCache.set(cacheKey, ids);
+            } catch (e) {
+                logger.error(TAG, "asset resolve failed", e);
+            }
         }
+        present.forEach((k, i) => {
+            out[k.field] = (ids && ids[i]) || k.value;
+        });
         return out;
     }
 
@@ -122,8 +133,9 @@
         return act;
     }
 
-    async function apply(force) {
+    async function apply() {
         const my = ++runId;
+        nudge = !nudge;
         const list = (storage.activities || []).filter(a => a && a.enabled);
         const built = [];
         for (let i = 0; i < list.length; i++) {
@@ -146,13 +158,9 @@
                 live.delete(sid);
             }
         }
-        if (force && built.length) {
-            for (const b of built) send(b.socketId, b.pid, null);
-            await new Promise(r => setTimeout(r, FORCE_GAP_MS));
-            if (my !== runId) return;
-        }
         for (let i = 0; i < built.length; i++) {
             const b = built[i];
+            b.activity.instance = nudge;
             send(b.socketId, b.pid, b.activity);
             live.set(b.socketId, b.pid);
             if (i < built.length - 1) {
@@ -175,7 +183,7 @@
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
             live.clear();
-            apply(true).catch(e => logger.error(TAG, e));
+            apply().catch(e => logger.error(TAG, e));
         }, 2000);
     }
 
@@ -317,7 +325,7 @@
                 { style: { padding: 16 } },
                 h(FormText, { style: { marginBottom: 12 } },
                     "Toggle the activities you want, edit them, then press Apply. Each enabled activity is sent as its own presence."),
-                h(Button, { label: "Apply presence", onPress: () => apply(true).catch(e => logger.error(TAG, e)) }),
+                h(Button, { label: "Apply presence", onPress: () => apply().catch(e => logger.error(TAG, e)) }),
                 h(Button, { label: "Clear all presence", color: "#4f545c", onPress: () => clearAll() }),
                 h(Button, {
                     label: "Add activity",
@@ -340,7 +348,7 @@
         onLoad() {
             for (const [ev, fn] of EVENTS) FluxDispatcher.subscribe(ev, fn);
             refreshTimer = setInterval(() => {
-                if (live.size) apply(true).catch(e => logger.error(TAG, e));
+                if (live.size) apply().catch(e => logger.error(TAG, e));
             }, REFRESH_MS);
             apply().catch(e => logger.error(TAG, e));
         },
