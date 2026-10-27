@@ -19,11 +19,8 @@
         { label: "Competing", value: 5 },
     ];
 
-    const SEND_GAP_MS = 300;
-    const REFRESH_MS = 300000;
-    const ASSET_TIMEOUT_MS = 3000;
-    const assetCache = new Map();
-    let nudge = false;
+    const SEND_GAP_MS = 1500;
+    const REFRESH_MS = 120000;
 
     const assetManager = findByProps("getAssetIds");
 
@@ -81,25 +78,16 @@
             return out;
         }
         const raw = present.map(k => k.value);
-        const cacheKey = appId + "|" + raw.join("|");
-        let ids = assetCache.get(cacheKey);
-        if (!ids) {
-            try {
-                ids = assetManager.getAssetIds(appId, raw);
-                if (!ids || !ids.length) {
-                    ids = await Promise.race([
-                        assetManager.fetchAssetIds(appId, raw),
-                        new Promise(r => setTimeout(() => r(null), ASSET_TIMEOUT_MS)),
-                    ]);
-                }
-                if (ids && ids.length) assetCache.set(cacheKey, ids);
-            } catch (e) {
-                logger.error(TAG, "asset resolve failed", e);
-            }
+        try {
+            let ids = assetManager.getAssetIds(appId, raw);
+            if (!ids || !ids.length) ids = await assetManager.fetchAssetIds(appId, raw);
+            present.forEach((k, i) => {
+                out[k.field] = (ids && ids[i]) || k.value;
+            });
+        } catch (e) {
+            logger.error(TAG, "asset resolve failed", e);
+            for (const k of present) out[k.field] = k.value;
         }
-        present.forEach((k, i) => {
-            out[k.field] = (ids && ids[i]) || k.value;
-        });
         return out;
     }
 
@@ -135,7 +123,6 @@
 
     async function apply() {
         const my = ++runId;
-        nudge = !nudge;
         const list = (storage.activities || []).filter(a => a && a.enabled);
         const built = [];
         for (let i = 0; i < list.length; i++) {
@@ -160,7 +147,6 @@
         }
         for (let i = 0; i < built.length; i++) {
             const b = built[i];
-            b.activity.instance = nudge;
             send(b.socketId, b.pid, b.activity);
             live.set(b.socketId, b.pid);
             if (i < built.length - 1) {
