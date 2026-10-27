@@ -19,6 +19,9 @@
         { label: "Competing", value: 5 },
     ];
 
+    const SEND_GAP_MS = 1500;
+    const REFRESH_MS = 120000;
+
     const assetManager = findByProps("getAssetIds");
 
     function uid() {
@@ -142,9 +145,14 @@
                 live.delete(sid);
             }
         }
-        for (const b of built) {
+        for (let i = 0; i < built.length; i++) {
+            const b = built[i];
             send(b.socketId, b.pid, b.activity);
             live.set(b.socketId, b.pid);
+            if (i < built.length - 1) {
+                await new Promise(r => setTimeout(r, SEND_GAP_MS));
+                if (my !== runId) return;
+            }
         }
         logger.log(TAG, "applied " + built.length + " activities");
     }
@@ -156,6 +164,7 @@
     }
 
     let reconnectTimer = null;
+    let refreshTimer = null;
     function onReconnect() {
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
@@ -163,6 +172,17 @@
             apply().catch(e => logger.error(TAG, e));
         }, 2000);
     }
+
+    function onAppState(e) {
+        if (e && e.state && e.state !== "active") return;
+        onReconnect();
+    }
+
+    const EVENTS = [
+        ["CONNECTION_OPEN", onReconnect],
+        ["CONNECTION_RESUMED", onReconnect],
+        ["APP_STATE_UPDATE", onAppState],
+    ];
 
     function Button({ label, onPress, color }) {
         return h(
@@ -312,12 +332,16 @@
 
     return {
         onLoad() {
-            FluxDispatcher.subscribe("CONNECTION_OPEN", onReconnect);
+            for (const [ev, fn] of EVENTS) FluxDispatcher.subscribe(ev, fn);
+            refreshTimer = setInterval(() => {
+                if (live.size) apply().catch(e => logger.error(TAG, e));
+            }, REFRESH_MS);
             apply().catch(e => logger.error(TAG, e));
         },
         onUnload() {
-            FluxDispatcher.unsubscribe("CONNECTION_OPEN", onReconnect);
+            for (const [ev, fn] of EVENTS) FluxDispatcher.unsubscribe(ev, fn);
             clearTimeout(reconnectTimer);
+            clearInterval(refreshTimer);
             clearAll();
         },
         settings: Settings,
