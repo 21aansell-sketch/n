@@ -1,0 +1,11 @@
+{
+  "name": "WhatsApp",
+  "description": "use settings.",
+  "authors": [
+    {
+      "name": "21aansell-sketch"
+    }
+  ],
+  "main": "index.js",
+  "hash": "21f4c1bf44e21df984402844d555d4da6fff265c9bf4992b90cb6314e3791f6d"
+}
